@@ -15,6 +15,7 @@ let marketSuggestions=[];
 let marketScanInfo={status:'',scannedListings:0,wishlistMatches:0,sourceUrl:'',startedAt:0,progress:null};
 let wikibidouBalance={amount:null,status:'idle',updatedAt:0,error:''};
 let autoEngineStatus={active:false,enabledCount:0,lastTickAt:0,reason:'unknown'};
+let autoSort='priority';
 
 
 const UI_STATE_KEY='wikidexUiStateV077';
@@ -36,6 +37,7 @@ async function persistUiState(){
     suggestionDrafts:{...suggestionDrafts},
     marketSuggestions,
     marketScanInfo,
+    autoSort,
     savedAt:Date.now()
   };
   await chrome.storage.local.set({[UI_STATE_KEY]:state}).catch(()=>{});
@@ -69,6 +71,7 @@ async function restoreUiState(){
         return !Number.isFinite(end)||end>now;
       });
     }
+    if(['priority','end','priceAsc','priceDesc','maxAsc','track','autobid'].includes(state.autoSort)) autoSort=state.autoSort;
     if(state.marketScanInfo&&typeof state.marketScanInfo==='object'){
       marketScanInfo={...state.marketScanInfo,restored:true};
       if(marketScanInfo.status==='scan') marketScanInfo.status=marketSuggestions.length?'done':'';
@@ -2290,6 +2293,86 @@ function autoState(item){
   }
 
   return {cls:'wait',txt:'SURVEILLE'};
+}
+
+function autoEndMs(item){
+  const t=item?.endAt?Date.parse(item.endAt):NaN;
+  return Number.isFinite(t)?t:Infinity;
+}
+
+function autoPriceValue(item){
+  const n=Number(item?.currentBid);
+  return Number.isFinite(n)?n:Infinity;
+}
+
+function autoMaxValue(item){
+  const n=Number(item?.max);
+  return Number.isFinite(n)?n:Infinity;
+}
+
+function autoPriorityGroup(item){
+  if(item?.enabled && item?.mode==='track'){
+    return {key:'track',label:'Suivi',rank:0};
+  }
+  if(item?.enabled && item?.mode!=='track'){
+    return {key:'autobid',label:'AutoBid actives',rank:1};
+  }
+  return {key:'inactive',label:'En pause / terminées',rank:2};
+}
+
+function autoAttentionRank(item){
+  if(item?.lastError)return 0;
+  if(
+    item?.enabled &&
+    item?.mode==='track' &&
+    item?.userId &&
+    item?.currentBidderId!==item.userId
+  )return 1;
+  return 2;
+}
+
+function compareAutoBids(a,b){
+  const byEnd=()=>autoEndMs(a)-autoEndMs(b);
+  const byTitle=()=>String(a?.title||'').localeCompare(
+    String(b?.title||''),
+    'fr'
+  );
+
+  if(autoSort==='priority'){
+    const ga=autoPriorityGroup(a);
+    const gb=autoPriorityGroup(b);
+    if(ga.rank!==gb.rank)return ga.rank-gb.rank;
+
+    const attention=autoAttentionRank(a)-autoAttentionRank(b);
+    if(attention)return attention;
+
+    return byEnd()||byTitle();
+  }
+
+  if(autoSort==='end')return byEnd()||byTitle();
+  if(autoSort==='priceAsc'){
+    return autoPriceValue(a)-autoPriceValue(b)||byEnd()||byTitle();
+  }
+  if(autoSort==='priceDesc'){
+    return autoPriceValue(b)-autoPriceValue(a)||byEnd()||byTitle();
+  }
+  if(autoSort==='maxAsc'){
+    return autoMaxValue(a)-autoMaxValue(b)||byEnd()||byTitle();
+  }
+
+  if(autoSort==='track'){
+    const am=a?.mode==='track'?0:1;
+    const bm=b?.mode==='track'?0:1;
+    return am-bm||byEnd()||byTitle();
+  }
+
+  if(autoSort==='autobid'){
+    const am=a?.mode==='track'?1:0;
+    const bm=b?.mode==='track'?1:0;
+    return am-bm||byEnd()||byTitle();
+  }
+
+  return byEnd()||byTitle();
 }
 
 async function render(){
