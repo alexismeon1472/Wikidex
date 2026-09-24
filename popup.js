@@ -695,9 +695,16 @@ async function fetchWishlistMarketplaceApi(tabId,wishlistCardIds,userId){
     world:'MAIN',
     args:[wishlistCardIds,userId],
     func:async(wishedIds,currentUserId)=>{
-      const wished=new Set((wishedIds||[]).map(String));
+      const normalizeCardKey=value=>{
+        const raw=String(value||'').trim().toLowerCase().replace(/^api_/,'');
+        const uuid=raw.match(/[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}/i);
+        return uuid ? uuid[0].toLowerCase() : raw;
+      };
+
+      const wished=new Set((wishedIds||[]).map(normalizeCardKey).filter(Boolean));
       const matches=[];
       const seenListings=new Set();
+      const seenMarketCards=new Set();
       const failedSegments=[];
 
       const emit=detail=>{
@@ -717,7 +724,9 @@ async function fetchWishlistMarketplaceApi(tabId,wishlistCardIds,userId){
         if(!a?.id || seenListings.has(a.id))return;
         seenListings.add(a.id);
 
-        if(!a.card_id || !wished.has(String(a.card_id)))return;
+        const marketCardId=normalizeCardKey(a.card_id || a.card?.id);
+        if(marketCardId)seenMarketCards.add(marketCardId);
+        if(!marketCardId || !wished.has(marketCardId))return;
         if(String(a.status||'').toLowerCase()!=='active')return;
         if(currentUserId && a.seller_id===currentUserId)return;
 
@@ -727,7 +736,7 @@ async function fetchWishlistMarketplaceApi(tabId,wishlistCardIds,userId){
         matches.push({
           listingId:a.id,
           id:a.id,
-          cardId:a.card_id,
+          cardId:a.card_id || a.card?.id,
           sellerId:a.seller_id,
           currentBid:a.current_bid,
           baseAmount:a.base_amount,
@@ -941,6 +950,10 @@ async function fetchWishlistMarketplaceApi(tabId,wishlistCardIds,userId){
         scanned,
         pagesRead,
         matches,
+        wishlistCount:wished.size,
+        marketUniqueCards:seenMarketCards.size,
+        wishlistSample:[...wished].slice(0,3),
+        marketSample:[...seenMarketCards].slice(0,3),
         recoveredPages,
         failedSegments,
         skippedAuctionsMax:failedSegments.reduce((n,x)=>n+(x.size||0),0),
@@ -1068,6 +1081,10 @@ async function scanWishlistMarketplace(){
       pagesRead:scan.pagesRead||0,
       wishlistMatches:(scan.matches||[]).length,
       uniqueCards:marketSuggestions.length,
+      wishlistCount:scan.wishlistCount||wished.length,
+      marketUniqueCards:scan.marketUniqueCards||0,
+      wishlistSample:Array.isArray(scan.wishlistSample)?scan.wishlistSample:[],
+      marketSample:Array.isArray(scan.marketSample)?scan.marketSample:[],
       truncated:!!scan.truncated,
       recoveredPages:scan.recoveredPages||0,
       failedSegments:Array.isArray(scan.failedSegments)?scan.failedSegments:[],
@@ -1453,7 +1470,14 @@ async function render(){
         : marketScanInfo.status==='error'
           ? `<div class="importMiss">${esc(marketScanInfo.error||'Erreur de scan')}</div>`
           : marketScanInfo.status==='done'
-            ? `<div class="muted" style="margin-bottom:7px">${marketScanInfo.scannedListings||0} enchère(s) lue(s) sur ${marketScanInfo.pagesRead||0} tranche(s) · ${marketScanInfo.wishlistMatches||0} correspondance(s) · ${marketSuggestions.length} carte(s) unique(s)${marketScanInfo.recoveredPages?` · ${marketScanInfo.recoveredPages} page(s) récupérée(s) par découpage`:''}${marketScanInfo.skippedAuctionsMax?` · jusqu’à ${marketScanInfo.skippedAuctionsMax} enchère(s) non lisible(s)`:''}${marketScanInfo.truncated?' · LIMITE DE SCAN ATTEINTE':''}</div>`
+            ? `<div class="muted" style="margin-bottom:7px">
+                ${marketScanInfo.scannedListings||0} enchère(s) lue(s) sur ${marketScanInfo.pagesRead||0} tranche(s) · ${marketScanInfo.wishlistMatches||0} correspondance(s) · ${marketSuggestions.length} carte(s) unique(s)
+                ${marketScanInfo.recoveredPages?` · ${marketScanInfo.recoveredPages} page(s) récupérée(s) par découpage`:''}
+                ${marketScanInfo.skippedAuctionsMax?` · jusqu’à ${marketScanInfo.skippedAuctionsMax} enchère(s) non lisible(s)`:''}
+                ${marketScanInfo.truncated?' · LIMITE DE SCAN ATTEINTE':''}
+                <div class="marketDiag">Wishlist lue : <b>${marketScanInfo.wishlistCount||0}</b> carte(s) · Marché : <b>${marketScanInfo.marketUniqueCards||0}</b> card_id unique(s)</div>
+                ${marketScanInfo.wishlistMatches===0?'<div class="marketDiag warn">Aucune intersection d’identifiants détectée. Les UUID sont maintenant normalisés avant comparaison.</div>':''}
+              </div>`
             : '<div class="muted">Lance un scan : WikiDex parcourt directement l’API du marché. Aucune page Marché n’a besoin d’être chargée.</div>'}
 
       ${marketSuggestions.map(s=>{
