@@ -407,17 +407,26 @@ async function wdDiscoverMyBids(){
   const re=/\/marketplace\/([0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})/ig;
 
   for(const a of document.querySelectorAll('a[href*="/marketplace/"]')){
+    if(!visible(a))continue;
     const href=a.href||a.getAttribute('href')||'';
     let m;
     while((m=re.exec(href)))ids.add(m[1].toLowerCase());
     re.lastIndex=0;
   }
 
-  // React/Next may keep the route in serialized props rather than an <a>.
-  // Scan the rendered HTML as a fallback.
-  const html=document.documentElement?.innerHTML||'';
-  let m;
-  while((m=re.exec(html)))ids.add(m[1].toLowerCase());
+  // Some SPA cards store their route in a data attribute rather than href.
+  for(const el of document.querySelectorAll('[data-href],[data-url],[data-link]')){
+    if(!visible(el))continue;
+    const raw=[
+      el.getAttribute('data-href'),
+      el.getAttribute('data-url'),
+      el.getAttribute('data-link')
+    ].filter(Boolean).join(' ');
+
+    let m;
+    while((m=re.exec(raw)))ids.add(m[1].toLowerCase());
+    re.lastIndex=0;
+  }
 
   return {
     ids:[...ids],
