@@ -372,6 +372,16 @@ async function wdMarketplaceBidFromPage(value,amount){
 }
 
 
+window.addEventListener('message',e=>{
+  if(e.source!==window)return;
+  const d=e.data;
+  if(!d || d.source!=='wikidex' || d.type!=='WD_MARKET_SCAN_PROGRESS')return;
+  chrome.runtime.sendMessage({
+    type:'WD_MARKET_SCAN_PROGRESS',
+    detail:d.detail||{}
+  }).catch(()=>{});
+});
+
 chrome.runtime.onMessage.addListener((m,s,send)=>{
   if(m.type==='WD_PING'){send({ok:true});return}
   if(m.type==='WD_MARKETPLACE_GET'){
