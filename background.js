@@ -2000,6 +2000,16 @@ async function wdBgProcessOne(item,tabId){
     }
   }
 
+  // Synced external bids are monitored but must never place a bid
+  // until the user explicitly configures an AutoBid ceiling.
+  if(item.mode==='track'){
+    item.lastAction=previouslyHighest
+      ? `Suivi — dépassé à ${item.currentBid}`
+      : `Suivi actif — mise actuelle ${item.currentBid}`;
+    await wdBgPersistItem(item);
+    return item;
+  }
+
   const base=Number(a.current_bid ?? a.base_amount ?? 0);
   const next=wdBgRoundMoney(base+Number(item.step||1));
 
