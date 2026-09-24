@@ -743,6 +743,178 @@ async function testMarketplaceCardFilter(tabId,cardId,listingId=''){
   return result?.[0]?.result||{supported:false};
 }
 
+async function testMarketplaceTextFilter(tabId,title,listingId=''){
+  const result=await chrome.scripting.executeScript({
+    target:{tabId},
+    world:'MAIN',
+    args:[title,listingId],
+    func:async(title,listingId)=>{
+      const candidates=['q','search','query'];
+
+      for(const param of candidates){
+        try{
+          const url=new URL('https://www.wiki-masters.com/api/marketplace');
+          url.searchParams.set('page','1');
+          url.searchParams.set('limit','50');
+          url.searchParams.set('sort','recent');
+          url.searchParams.set(param,title);
+
+          const r=await fetch(url.toString(),{
+            method:'GET',
+            headers:{accept:'*/*'},
+            credentials:'include',
+            cache:'no-store'
+          });
+
+          const text=await r.text();
+          let data=null;
+          try{data=text?JSON.parse(text):null}catch{}
+          if(!r.ok)continue;
+
+          const rows=Array.isArray(data?.auctions)?data.auctions:[];
+          const targetSeen=rows.some(a=>String(a?.id||'')===String(listingId||''));
+
+          if(targetSeen){
+            return {supported:true,param,count:rows.length,targetSeen};
+          }
+        }catch{}
+      }
+
+      return {supported:false};
+    }
+  });
+
+  return result?.[0]?.result||{supported:false};
+}
+
+async function fetchWishlistMarketplaceByTitle(tabId,wishlistCards,userId,param){
+  const result=await chrome.scripting.executeScript({
+    target:{tabId},
+    world:'MAIN',
+    args:[wishlistCards,userId,param],
+    func:async(cards,currentUserId,param)=>{
+      const normalize=v=>{
+        const raw=String(v||'').trim().toLowerCase().replace(/^api_/,'');
+        const m=raw.match(/[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}/i);
+        return m?m[0].toLowerCase():raw;
+      };
+
+      const matches=[];
+      const seenListings=new Set();
+      let requests=0;
+      let failed=0;
+
+      const emit=detail=>{
+        try{
+          window.postMessage({
+            source:'wikidex',
+            type:'WD_MARKET_SCAN_PROGRESS',
+            detail:{...detail,at:Date.now()}
+          },'*');
+        }catch{}
+      };
+
+      for(let i=0;i<cards.length;i++){
+        const card=cards[i]||{};
+        const wanted=normalize(card.id);
+        const title=String(card.title||'').trim();
+        if(!wanted || !title)continue;
+
+        emit({
+          phase:'targetedTitle',
+          current:i+1,
+          total:cards.length,
+          title,
+          scanned:i,
+          matches:matches.length
+        });
+
+        try{
+          const url=new URL('https://www.wiki-masters.com/api/marketplace');
+          url.searchParams.set('page','1');
+          url.searchParams.set('limit','50');
+          url.searchParams.set('sort','recent');
+          url.searchParams.set(param,title);
+
+          const r=await fetch(url.toString(),{
+            method:'GET',
+            headers:{accept:'*/*'},
+            credentials:'include',
+            cache:'no-store'
+          });
+          requests++;
+
+          const text=await r.text();
+          let data=null;
+          try{data=text?JSON.parse(text):null}catch{}
+          if(!r.ok){failed++;continue;}
+
+          const rows=Array.isArray(data?.auctions)?data.auctions:[];
+          for(const a of rows){
+            if(!a?.id || seenListings.has(a.id))continue;
+
+            const marketId=normalize(a.card_id||a.card?.id);
+            if(marketId!==wanted)continue;
+            seenListings.add(a.id);
+
+            if(String(a.status||'').toLowerCase()!=='active')continue;
+            if(currentUserId && a.seller_id===currentUserId)continue;
+
+            const end=a.end_at?Date.parse(a.end_at):NaN;
+            if(Number.isFinite(end)&&end<=Date.now())continue;
+
+            matches.push({
+              listingId:a.id,
+              id:a.id,
+              cardId:a.card_id||a.card?.id,
+              sellerId:a.seller_id,
+              currentBid:a.current_bid,
+              baseAmount:a.base_amount,
+              effectiveBid:a.effective_bid,
+              endAt:a.end_at,
+              status:a.status,
+              currentBidderId:a.current_bidder_id,
+              title:a.card?.wikipedia_title||a.snapshot_search_document||a.card?.category||title,
+              rarity:a.snapshot_rarity||a.card?.rarity||card.rarity||'',
+              category:a.card?.category||'',
+              imageUrl:a.card?.image_url||'',
+              sellerName:a.seller?.username||'',
+              owned:!!a.owned
+            });
+          }
+        }catch{
+          failed++;
+        }
+
+        await new Promise(r=>setTimeout(r,40));
+      }
+
+      emit({
+        phase:'done',
+        scanned:cards.length,
+        matches:matches.length,
+        targetedTitle:true
+      });
+
+      return {
+        ok:true,
+        targetedTitle:true,
+        requests,
+        failed,
+        scanned:cards.length,
+        pagesRead:requests,
+        matches,
+        wishlistCount:cards.length,
+        marketUniqueCards:null,
+        truncated:false,
+        finished:true
+      };
+    }
+  });
+
+  return result?.[0]?.result||null;
+}
+
 async function fetchWishlistMarketplaceTargeted(tabId,wishlistCardIds,userId,param){
   const result=await chrome.scripting.executeScript({
     target:{tabId},
@@ -1201,6 +1373,9 @@ function marketProgressText(info=marketScanInfo){
   if(p.phase==='targeted'){
     return `Recherche wishlist ${p.current}/${p.total} · ${p.matches||0} enchère(s) trouvée(s) · ${elapsed}s`;
   }
+  if(p.phase==='targetedTitle'){
+    return `Recherche ${p.current}/${p.total} · ${p.matches||0} enchère(s) trouvée(s) · ${elapsed}s · ${p.title||''}`;
+  }
 
   const block=p.block||info.pagesRead||0;
   const scanned=p.scanned??info.scannedListings??0;
@@ -1270,10 +1445,26 @@ async function scanWishlistMarketplace(){
     }
 
     let cardFilter=null;
+    let textFilter=null;
+
     if(openListingProbe?.marketCardId){
       cardFilter=await testMarketplaceCardFilter(
         tabId,
         openListingProbe.marketCardId,
+        openListingProbe.listingId
+      );
+    }
+
+    const wishlistCards=Array.isArray(wishlist.cards)?wishlist.cards:[];
+    if(
+      !cardFilter?.supported &&
+      openListingProbe?.title &&
+      openListingProbe?.listingId &&
+      wishlistCards.length
+    ){
+      textFilter=await testMarketplaceTextFilter(
+        tabId,
+        openListingProbe.title,
         openListingProbe.listingId
       );
     }
@@ -1285,13 +1476,25 @@ async function scanWishlistMarketplace(){
           wishlist.userId||null,
           cardFilter.param
         )
-      : await fetchWishlistMarketplaceApi(
-          tabId,
-          wished,
-          wishlist.userId||null
-        );
+      : textFilter?.supported
+        ? await fetchWishlistMarketplaceByTitle(
+            tabId,
+            wishlistCards,
+            wishlist.userId||null,
+            textFilter.param
+          )
+        : await fetchWishlistMarketplaceApi(
+            tabId,
+            wished,
+            wishlist.userId||null
+          );
 
-    if(scan)scan.cardFilter=cardFilter;
+    if(scan){
+      scan.cardFilter=cardFilter;
+      scan.textFilter=textFilter;
+      scan.cardsLookupError=wishlist.cardsLookupError||'';
+      scan.wishlistTitles=wishlistCards.length;
+    }
 
     if(!scan)throw new Error('Aucune réponse du scanner marché.');
     if(!scan.ok)throw new Error(scan.error||'Erreur pendant le scan du marché.');
@@ -1317,7 +1520,11 @@ async function scanWishlistMarketplace(){
       failedSegments:Array.isArray(scan.failedSegments)?scan.failedSegments:[],
       skippedAuctionsMax:scan.skippedAuctionsMax||0,
       targeted:!!scan.targeted,
+      targetedTitle:!!scan.targetedTitle,
       cardFilter:scan.cardFilter||null,
+      textFilter:scan.textFilter||null,
+      wishlistTitles:scan.wishlistTitles||0,
+      cardsLookupError:scan.cardsLookupError||'',
       requests:scan.requests||0,
       failedRequests:scan.failed||0,
       sourceUrl:'API /api/marketplace'
@@ -1710,8 +1917,15 @@ async function render(){
                   Wishlist lue : <b>${marketScanInfo.wishlistCount||0}</b> carte(s)
                   ${marketScanInfo.targeted
                     ? ` · mode ciblé par card_id · ${marketScanInfo.requests||0} requête(s)`
-                    : ` · Marché : <b>${marketScanInfo.marketUniqueCards||0}</b> card_id unique(s)`}
+                    : marketScanInfo.targetedTitle
+                      ? ` · mode ciblé par titre (${esc(marketScanInfo.textFilter?.param||'q')}) · ${marketScanInfo.requests||0} requête(s)`
+                      : ` · Marché : <b>${marketScanInfo.marketUniqueCards||0}</b> card_id unique(s)`}
                 </div>
+                ${marketScanInfo.cardsLookupError
+                  ? `<div class="marketDiag warn">Titres wishlist non récupérés : ${esc(marketScanInfo.cardsLookupError)}</div>`
+                  : marketScanInfo.wishlistTitles
+                    ? `<div class="marketDiag">Titres wishlist récupérés : <b>${marketScanInfo.wishlistTitles}</b></div>`
+                    : ''}
                 ${marketScanInfo.openListingProbe?.marketCardId
                   ? `<div class="marketProbe ${marketScanInfo.openListingProbe.inWishlist?'ok':'bad'}">
                       Enchère ouverte : <b>${esc(marketScanInfo.openListingProbe.title)}</b><br>
