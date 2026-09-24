@@ -1576,7 +1576,7 @@ const WD_BG_ENGINE_STATUS_KEY='wikidexAutoEngineStatusV1';
 const WD_BG_BALANCE_KEY='wikidexWikiBidouBalanceV1';
 const WD_BG_LOW_BALANCE_KEY='wikidexLowBalanceStateV1';
 const WD_BG_LOW_BALANCE_THRESHOLD=100;
-const WD_BG_INCREMENT_PCT=11;
+const WD_BG_INCREMENT_PCT=10;
 const WD_BG_TICK_MIN_MS=2200;
 
 let wdBgRunning=false;
@@ -1591,7 +1591,7 @@ function wdBgNextBid(base){
   const n=Number(base);
   if(!Number.isFinite(n)||n<0)return NaN;
 
-  // WikiMasters: each new bid must be 11% above the previous one.
+  // WikiMasters: each new bid must be 10% above the previous one.
   // Wikibidous are treated as whole units, so always round upward.
   return Math.max(
     Math.ceil(n*(1+WD_BG_INCREMENT_PCT/100)),
@@ -2031,7 +2031,7 @@ async function wdBgProcessOne(item,tabId){
     item.lastAction=`Plafond atteint (${item.max})`;
     wdBgAddLog(
       item,
-      `Pas de surenchère : +11 % ⇒ ${next} > plafond ${item.max}`
+      `Pas de surenchère : +10 % ⇒ ${next} > plafond ${item.max}`
     );
 
     const capKey=`${base}|${item.max}`;
