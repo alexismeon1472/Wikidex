@@ -2170,7 +2170,7 @@ async function render(){
       const logs=(item.logs||[]).map(esc).join('\n');
       return `<div class="autoRow">
         <div class="autoTop">
-          <div class="autoTitle">${esc(item.title||item.listingId)}</div>
+          <div class="autoTitle"><a class="auctionLink" href="https://www.wiki-masters.com/marketplace/${encodeURIComponent(item.listingId)}" target="_blank" rel="noopener noreferrer">${esc(item.title||item.listingId)}</a></div>
           <span class="autoState ${st.cls}">${st.txt}</span>
         </div>
         <div class="autoMeta">
@@ -2265,7 +2265,7 @@ async function render(){
         const end=s.endAt?new Date(s.endAt).toLocaleString('fr-FR'):'—';
         return `<div class="marketSuggestion">
           <div class="marketSuggestionTop">
-            <div class="marketSuggestionTitle">${esc(s.title)}</div>
+            <div class="marketSuggestionTitle"><a class="auctionLink" href="https://www.wiki-masters.com/marketplace/${encodeURIComponent(s.listingId)}" target="_blank" rel="noopener noreferrer">${esc(s.title)}</a></div>
             <span class="marketBadge">${esc(s.rarity||'?')}</span>
           </div>
           <div class="marketSuggestionMeta">
