@@ -2019,8 +2019,8 @@ async function render(){
           ${followed
             ? '<div class="marketSuggestionNote">Déjà présente dans tes auto-enchères.</div>'
             : `<div class="marketSuggestionForm">
-                <input data-suggest-max="${s.listingId}" type="number" min="0.01" step="0.01" placeholder="Plafond">
-                <input data-suggest-step="${s.listingId}" type="number" min="0.01" step="0.01" value="1" placeholder="Pas">
+                <input data-suggest-max="${s.listingId}" type="number" min="0.01" step="0.01" placeholder="Plafond" value="${esc(suggestionDrafts[s.listingId]?.max||'')}">
+                <input data-suggest-step="${s.listingId}" type="number" min="0.01" step="0.01" value="${esc(suggestionDrafts[s.listingId]?.step||'1')}" placeholder="Pas">
                 <button class="green" data-suggest-add="${s.listingId}">Créer auto-enchère</button>
               </div>`}
         </div>`;
@@ -2031,16 +2031,36 @@ async function render(){
     $('scanMarket').onclick=scanWishlistMarketplace;
     document.querySelectorAll('[data-suggest-add]').forEach(b=>b.onclick=()=>addSuggestionAutoBid(b.dataset.suggestAdd));
 
+    const scheduleLocalSave=()=>{
+      clearTimeout(window._wdLocalSave);
+      window._wdLocalSave=setTimeout(()=>persistUiState(),180);
+    };
+
     const rememberAutoDraft=()=>{
       autoDraft={
         listing:$('autoListing')?.value||'',
         max:$('autoMax')?.value||'',
         step:$('autoStep')?.value||'1'
       };
+      scheduleLocalSave();
     };
     $('autoListing').oninput=rememberAutoDraft;
     $('autoMax').oninput=rememberAutoDraft;
     $('autoStep').oninput=rememberAutoDraft;
+
+    document.querySelectorAll('[data-suggest-max],[data-suggest-step]').forEach(el=>{
+      el.oninput=()=>{
+        const listingId=el.dataset.suggestMax||el.dataset.suggestStep;
+        if(!listingId)return;
+        const maxEl=document.querySelector(`[data-suggest-max="${listingId}"]`);
+        const stepEl=document.querySelector(`[data-suggest-step="${listingId}"]`);
+        suggestionDrafts[listingId]={
+          max:maxEl?.value||'',
+          step:stepEl?.value||'1'
+        };
+        scheduleLocalSave();
+      };
+    });
 
     document.querySelectorAll('[data-auto-toggle]').forEach(b=>b.onclick=()=>toggleAutoBid(b.dataset.autoToggle));
     document.querySelectorAll('[data-auto-refresh]').forEach(b=>b.onclick=()=>refreshAutoBid(b.dataset.autoRefresh));
