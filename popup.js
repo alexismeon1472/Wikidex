@@ -8,6 +8,7 @@ let autoBids=[];
 let autoTickRunning=false;
 let autoTimer=null;
 let autoDraft={listing:'',max:'',step:'1'};
+let suggestionDrafts={};
 let marketSuggestions=[];
 let marketScanInfo={status:'',scannedListings:0,wishlistMatches:0,sourceUrl:'',startedAt:0,progress:null};
 
@@ -27,16 +28,25 @@ async function persistUiState(){
     currentQuery,
     q:$('q')?.value||currentQuery||'',
     rarities:[...document.querySelectorAll('.rarityChip.active')].map(b=>b.dataset.rarity),
+    autoDraft:{...autoDraft},
+    suggestionDrafts:{...suggestionDrafts},
+    marketSuggestions,
+    marketScanInfo,
     savedAt:Date.now()
   };
-  await chrome.storage.session.set({[UI_STATE_KEY]:state}).catch(()=>{});
+  await chrome.storage.local.set({[UI_STATE_KEY]:state}).catch(()=>{});
 }
 
 async function restoreUiState(){
   restoring=true;
   try{
-    const obj=await chrome.storage.session.get(UI_STATE_KEY);
-    const state=obj?.[UI_STATE_KEY];
+    let obj=await chrome.storage.local.get(UI_STATE_KEY);
+    let state=obj?.[UI_STATE_KEY];
+    if(!state){
+      const old=await chrome.storage.session.get(UI_STATE_KEY).catch(()=>({}));
+      state=old?.[UI_STATE_KEY]||null;
+      if(state)await chrome.storage.local.set({[UI_STATE_KEY]:state}).catch(()=>{});
+    }
     if(!state)return;
 
     tab=state.tab||'results';
@@ -45,6 +55,21 @@ async function restoreUiState(){
     openCol=state.openCol||null;
     currentQuery=state.currentQuery||state.q||'';
     selected=new Set(state.selectedIds||[]);
+    if(state.autoDraft&&typeof state.autoDraft==='object') autoDraft={...autoDraft,...state.autoDraft};
+    if(state.suggestionDrafts&&typeof state.suggestionDrafts==='object') suggestionDrafts={...state.suggestionDrafts};
+    if(Array.isArray(state.marketSuggestions)){
+      const now=Date.now();
+      marketSuggestions=state.marketSuggestions.filter(x=>{
+        if(!x?.endAt)return true;
+        const end=Date.parse(x.endAt);
+        return !Number.isFinite(end)||end>now;
+      });
+    }
+    if(state.marketScanInfo&&typeof state.marketScanInfo==='object'){
+      marketScanInfo={...state.marketScanInfo,restored:true};
+      if(marketScanInfo.status==='scan') marketScanInfo.status=marketSuggestions.length?'done':'';
+      marketScanInfo.uniqueCards=marketSuggestions.length;
+    }
 
     if($('q'))$('q').value=state.q||currentQuery||'';
     const restoredRarities=new Set(
