@@ -382,8 +382,57 @@ window.addEventListener('message',e=>{
   }).catch(()=>{});
 });
 
+async function wdDiscoverMyBids(){
+  const normText=v=>String(v||'').replace(/\s+/g,' ').trim().toLowerCase();
+
+  const candidates=[
+    ...document.querySelectorAll('button,a,[role="tab"],[role="button"]')
+  ].filter(el=>{
+    const txt=normText(el.innerText||el.textContent);
+    return txt.startsWith('mes enchères') || txt.startsWith('mes encheres');
+  });
+
+  const tab=candidates[0]||null;
+  if(tab){
+    try{
+      tab.scrollIntoView({block:'nearest'});
+      tab.click();
+    }catch{}
+  }
+
+  // Allow the SPA to render the user's active-bids panel.
+  await new Promise(r=>setTimeout(r,900));
+
+  const ids=new Set();
+  const re=/\/marketplace\/([0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})/ig;
+
+  for(const a of document.querySelectorAll('a[href*="/marketplace/"]')){
+    const href=a.href||a.getAttribute('href')||'';
+    let m;
+    while((m=re.exec(href)))ids.add(m[1].toLowerCase());
+    re.lastIndex=0;
+  }
+
+  // React/Next may keep the route in serialized props rather than an <a>.
+  // Scan the rendered HTML as a fallback.
+  const html=document.documentElement?.innerHTML||'';
+  let m;
+  while((m=re.exec(html)))ids.add(m[1].toLowerCase());
+
+  return {
+    ids:[...ids],
+    tabFound:!!tab,
+    pageUrl:location.href,
+    pageText:(document.body?.innerText||'').slice(0,500)
+  };
+}
+
 chrome.runtime.onMessage.addListener((m,s,send)=>{
   if(m.type==='WD_PING'){send({ok:true});return}
+  if(m.type==='WD_DISCOVER_MY_BIDS'){
+    wdDiscoverMyBids().then(send).catch(e=>send({error:e.message||String(e)}));
+    return true;
+  }
   if(m.type==='WD_MARKETPLACE_GET'){
     wdMarketplaceGetFromPage(m.listing).then(send).catch(e=>send({error:e.message||String(e)}));
     return true;
