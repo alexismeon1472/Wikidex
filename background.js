@@ -2203,6 +2203,29 @@ chrome.runtime.onInstalled.addListener(()=>{
 
 chrome.runtime.onMessage.addListener((m,sender,send)=>{
   (async()=>{
+    if(m.type==='AUTOBID_HEARTBEAT'){
+      return await wdBgProcessAutoBids();
+    }
+    if(m.type==='AUTOBID_WAKE'){
+      await wdBgEnsureOffscreen();
+      return await wdBgProcessAutoBids({force:true});
+    }
+    if(m.type==='AUTOBID_PROCESS_ONE'){
+      await wdBgEnsureOffscreen();
+      return await wdBgProcessAutoBids({
+        force:true,
+        itemId:m.id||null
+      });
+    }
+    if(m.type==='AUTOBID_STATUS'){
+      const obj=await chrome.storage.local.get(WD_BG_ENGINE_STATUS_KEY);
+      return obj?.[WD_BG_ENGINE_STATUS_KEY]||{
+        active:false,
+        enabledCount:0,
+        lastTickAt:0,
+        reason:'unknown'
+      };
+    }
     if(m.type==='SESSION_USER_ID'){
       const session=await wdGetSupabaseSession(m.tabId||null);
       return {userId:session.userId};
