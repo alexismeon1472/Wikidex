@@ -2415,6 +2415,12 @@ async function render(){
         Le popup et le panneau peuvent être fermés.<br>
         Notifications : perte de tête · enchère gagnée · plafond atteint · solde ≤ 100 Wikibidous.
       </div>
+
+      <div class="toolbar">
+        <button id="syncMyBids" class="primary">↻ Synchroniser mes enchères WikiMasters</button>
+        <span class="muted">Les nouvelles sont importées en suivi, sans surenchère automatique.</span>
+      </div>
+
       ${rows||'<div class="empty">Aucune auto-enchère configurée.</div>'}
 
       <div class="marketScanBar">
@@ -2489,6 +2495,7 @@ async function render(){
     `;
 
     $('autoAdd').onclick=createAutoBid;
+    $('syncMyBids').onclick=syncMyBidsFromWikiMasters;
     $('refreshWikiBidous').onclick=()=>refreshWikiBidouBalance();
     updateWikiBidouBalanceDom();
     $('scanMarket').onclick=scanWishlistMarketplace;
@@ -2526,6 +2533,7 @@ async function render(){
     });
 
     document.querySelectorAll('[data-auto-toggle]').forEach(b=>b.onclick=()=>toggleAutoBid(b.dataset.autoToggle));
+    document.querySelectorAll('[data-auto-configure]').forEach(b=>b.onclick=()=>configureTrackedAutoBid(b.dataset.autoConfigure));
     document.querySelectorAll('[data-auto-refresh]').forEach(b=>b.onclick=()=>refreshAutoBid(b.dataset.autoRefresh));
     document.querySelectorAll('[data-auto-delete]').forEach(b=>b.onclick=()=>deleteAutoBid(b.dataset.autoDelete));
   }
