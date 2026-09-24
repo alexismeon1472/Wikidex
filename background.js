@@ -1571,6 +1571,636 @@ async function wdMarketplaceBid(value,amount){
 }
 
 
+const WD_BG_AUTOBID_KEY='wikidexAutoBidsV010';
+const WD_BG_ENGINE_STATUS_KEY='wikidexAutoEngineStatusV1';
+const WD_BG_BALANCE_KEY='wikidexWikiBidouBalanceV1';
+const WD_BG_LOW_BALANCE_KEY='wikidexLowBalanceStateV1';
+const WD_BG_LOW_BALANCE_THRESHOLD=100;
+const WD_BG_TICK_MIN_MS=2200;
+
+let wdBgRunning=false;
+let wdBgLastTickAt=0;
+let wdBgLastBalanceReadAt=0;
+
+function wdBgRoundMoney(n){
+  return Math.round((Number(n)+Number.EPSILON)*100)/100;
+}
+
+function wdBgAuctionTitle(a){
+  return a?.card?.wikipedia_title ||
+    a?.snapshot_search_document ||
+    a?.card?.category ||
+    'Enchère';
+}
+
+function wdBgAuctionClosed(a){
+  const status=String(a?.status||'').toLowerCase();
+  const closed=[
+    'settled_sold','settled_unsold','sold','closed','expired',
+    'cancelled','canceled','ended','settled'
+  ];
+  if(closed.includes(status))return true;
+  const end=a?.end_at ? Date.parse(a.end_at) : NaN;
+  return Number.isFinite(end) && end<=Date.now();
+}
+
+function wdBgAddLog(item,msg){
+  item.logs=Array.isArray(item.logs)?item.logs:[];
+  item.logs.unshift(`${new Date().toLocaleTimeString('fr-FR')} — ${msg}`);
+  item.logs=item.logs.slice(0,12);
+}
+
+async function wdBgNotify(id,title,message){
+  try{
+    await chrome.notifications.create(
+      `wikidex-${id}`,
+      {
+        type:'basic',
+        iconUrl:'data:image/svg+xml;charset=utf-8,'+encodeURIComponent(
+          '<svg xmlns="http://www.w3.org/2000/svg" width="128" height="128">'+
+          '<rect width="128" height="128" rx="24" fill="#1f2937"/>'+
+          '<text x="64" y="80" text-anchor="middle" font-size="64" font-family="Arial" font-weight="700" fill="white">W</text>'+
+          '</svg>'
+        ),
+        title,
+        message,
+        priority:1
+      }
+    );
+  }catch{}
+}
+
+async function wdBgFindWikiMastersTab(){
+  const tabs=await chrome.tabs.query({
+    url:[
+      'https://www.wiki-masters.com/*',
+      'https://wiki-masters.com/*'
+    ]
+  });
+
+  tabs.sort((a,b)=>{
+    function score(t){
+      let n=0;
+      if(String(t.url||'').startsWith('https://www.wiki-masters.com/'))n+=100;
+      if(t.active)n+=20;
+      if(t.status==='complete')n+=10;
+      if(!t.discarded)n+=5;
+      return n;
+    }
+    return score(b)-score(a);
+  });
+
+  for(const tab of tabs){
+    if(!tab.id || tab.discarded)continue;
+    try{
+      const pong=await chrome.tabs.sendMessage(tab.id,{type:'WD_PING'});
+      if(pong?.ok)return tab;
+    }catch{}
+  }
+
+  return null;
+}
+
+async function wdBgPageGet(tabId,listingId){
+  const r=await chrome.tabs.sendMessage(tabId,{
+    type:'WD_MARKETPLACE_GET',
+    listing:listingId
+  });
+  if(!r)throw new Error('Aucune réponse de l’onglet WikiMasters.');
+  if(r.error)throw new Error(r.error);
+  return r;
+}
+
+async function wdBgPageBid(tabId,listingId,amount){
+  // IMPORTANT: exactly one POST call. Never retry this function automatically.
+  const r=await chrome.tabs.sendMessage(tabId,{
+    type:'WD_MARKETPLACE_BID',
+    listing:listingId,
+    amount
+  });
+  if(!r)throw new Error('Aucune réponse de l’onglet WikiMasters.');
+  if(r.error)throw new Error(r.error);
+  if(!r.ok)throw new Error('Enchère refusée.');
+  return r;
+}
+
+async function wdBgPersistItem(runtimeItem){
+  const obj=await chrome.storage.local.get(WD_BG_AUTOBID_KEY);
+  const rows=Array.isArray(obj?.[WD_BG_AUTOBID_KEY])
+    ? obj[WD_BG_AUTOBID_KEY]
+    : [];
+
+  const i=rows.findIndex(x=>x?.id===runtimeItem.id);
+  if(i<0)return null;
+
+  const latest=rows[i];
+
+  // Keep user-editable values from the newest stored copy.
+  const merged={
+    ...latest,
+    ...runtimeItem,
+    max:latest.max,
+    step:latest.step,
+    enabled:latest.enabled===false ? false : runtimeItem.enabled
+  };
+
+  rows[i]=merged;
+  await chrome.storage.local.set({[WD_BG_AUTOBID_KEY]:rows});
+  return merged;
+}
+
+async function wdBgGetUserId(tabId,item){
+  if(item?.userId)return item.userId;
+  try{
+    const session=await wdGetSupabaseSession(tabId);
+    return session?.userId||null;
+  }catch{
+    return null;
+  }
+}
+
+async function wdBgReadBalance(tabId){
+  const out=await chrome.scripting.executeScript({
+    target:{tabId},
+    func:()=>{
+      function visible(el){
+        if(!(el instanceof Element))return false;
+        const r=el.getBoundingClientRect();
+        const st=getComputedStyle(el);
+        return r.width>0 && r.height>0 &&
+          st.display!=='none' &&
+          st.visibility!=='hidden';
+      }
+
+      function parseNumber(raw){
+        let x=String(raw||'')
+          .replace(/[\s\u00A0\u202F]/g,'')
+          .trim();
+
+        if(!x)return null;
+
+        const lastComma=x.lastIndexOf(',');
+        const lastDot=x.lastIndexOf('.');
+        const last=Math.max(lastComma,lastDot);
+
+        if(last>=0){
+          const decimals=x.length-last-1;
+          if(decimals===1 || decimals===2){
+            x=x.slice(0,last).replace(/[.,]/g,'')+
+              '.'+
+              x.slice(last+1).replace(/[.,]/g,'');
+          }else{
+            x=x.replace(/[.,]/g,'');
+          }
+        }
+
+        const n=Number(x);
+        return Number.isFinite(n)?n:null;
+      }
+
+      function extract(text){
+        const src=String(text||'').replace(/\s+/g,' ').trim();
+        if(!/wikibidou/i.test(src))return null;
+
+        const before=src.match(
+          /([0-9][0-9\s\u00A0\u202F.,]{0,24})\s*wikibidous?/i
+        );
+        if(before){
+          const n=parseNumber(before[1]);
+          if(n!==null)return n;
+        }
+
+        const after=src.match(
+          /wikibidous?[^0-9]{0,24}([0-9][0-9\s\u00A0\u202F.,]{0,24})/i
+        );
+        if(after){
+          const n=parseNumber(after[1]);
+          if(n!==null)return n;
+        }
+
+        return null;
+      }
+
+      const candidates=[];
+      const nodes=[
+        ...document.querySelectorAll(
+          'header,nav,button,a,div,span,[aria-label],[title]'
+        )
+      ];
+
+      for(const el of nodes){
+        if(!visible(el))continue;
+        const own=[
+          el.innerText||'',
+          el.getAttribute?.('aria-label')||'',
+          el.getAttribute?.('title')||''
+        ].join(' ');
+
+        if(!/wikibidou/i.test(own))continue;
+
+        const variants=[
+          el,
+          el.parentElement,
+          el.parentElement?.parentElement
+        ].filter(Boolean);
+
+        for(let depth=0;depth<variants.length;depth++){
+          const node=variants[depth];
+          const txt=[
+            node.innerText||'',
+            node.getAttribute?.('aria-label')||'',
+            node.getAttribute?.('title')||''
+          ].join(' ');
+
+          const amount=extract(txt);
+          if(amount===null)continue;
+
+          const r=node.getBoundingClientRect();
+          let score=100-depth*10;
+          if(node.closest('header,nav'))score+=50;
+          if(r.top>=0 && r.top<180)score+=25;
+          if(txt.length<120)score+=20;
+
+          candidates.push({amount,score});
+        }
+      }
+
+      candidates.sort((a,b)=>b.score-a.score);
+      return candidates[0]?.amount ?? null;
+    }
+  });
+
+  const amount=Number(out?.[0]?.result);
+  return Number.isFinite(amount)?amount:null;
+}
+
+async function wdBgCheckLowBalance(tabId){
+  const now=Date.now();
+  if(now-wdBgLastBalanceReadAt<30000)return;
+  wdBgLastBalanceReadAt=now;
+
+  let amount=null;
+  try{
+    amount=await wdBgReadBalance(tabId);
+  }catch{
+    return;
+  }
+
+  if(!Number.isFinite(amount))return;
+
+  await chrome.storage.local.set({
+    [WD_BG_BALANCE_KEY]:{
+      amount,
+      updatedAt:Date.now()
+    }
+  });
+
+  const obj=await chrome.storage.local.get(WD_BG_LOW_BALANCE_KEY);
+  const old=obj?.[WD_BG_LOW_BALANCE_KEY]||{};
+  const low=amount<=WD_BG_LOW_BALANCE_THRESHOLD;
+
+  if(low && !old.low){
+    await wdBgNotify(
+      'balance-low',
+      'WikiDex · Solde faible',
+      `${amount} Wikibidous disponibles (seuil : ${WD_BG_LOW_BALANCE_THRESHOLD}).`
+    );
+  }
+
+  await chrome.storage.local.set({
+    [WD_BG_LOW_BALANCE_KEY]:{
+      low,
+      amount,
+      checkedAt:Date.now()
+    }
+  });
+}
+
+async function wdBgProcessOne(item,tabId){
+  const now=Date.now();
+  if(!item?.enabled)return item;
+  if(item.nextPollAt && now<item.nextPollAt)return item;
+
+  let r;
+  try{
+    r=await wdBgPageGet(tabId,item.listingId);
+    item.lastSuccessAt=Date.now();
+    item.consecutiveErrors=0;
+    item.nextPollAt=0;
+    item.lastError='';
+  }catch(e){
+    item.consecutiveErrors=(item.consecutiveErrors||0)+1;
+    item.lastError=e.message||String(e);
+
+    const delay=Math.min(
+      30000,
+      5000*Math.pow(2,Math.min(3,item.consecutiveErrors-1))
+    );
+
+    item.nextPollAt=Date.now()+delay;
+    item.lastAction=
+      `Lecture indisponible — nouvel essai dans ${Math.round(delay/1000)} s`;
+
+    const sig=`${item.consecutiveErrors}|${item.lastError}`;
+    if(item._lastErrorSig!==sig || item.consecutiveErrors<=2){
+      wdBgAddLog(item,'Lecture impossible : '+item.lastError);
+      item._lastErrorSig=sig;
+    }
+
+    await wdBgPersistItem(item);
+    return item;
+  }
+
+  const a=r.data?.auction;
+  if(!a){
+    item.lastAction='Réponse invalide';
+    await wdBgPersistItem(item);
+    return item;
+  }
+
+  item.userId=await wdBgGetUserId(tabId,item);
+  item.title=wdBgAuctionTitle(a);
+  item.currentBid=Number(a.current_bid ?? a.base_amount ?? 0);
+  item.currentBidderId=a.current_bidder_id||null;
+  item.status=a.status||'';
+  item.endAt=a.end_at||null;
+  item.sourceTabId=tabId;
+
+  if(wdBgAuctionClosed(a)){
+    item.enabled=false;
+
+    const won=!!item.userId && (
+      a.winner_id===item.userId ||
+      a.current_bidder_id===item.userId
+    );
+
+    item.lastAction=won?'Terminée — gagnée':'Terminée';
+    wdBgAddLog(
+      item,
+      item.lastAction+
+      (a.final_price!=null?` à ${a.final_price}`:'')
+    );
+
+    if(won && !item.notifiedWon){
+      item.notifiedWon=true;
+      await wdBgNotify(
+        `won-${item.listingId}`,
+        'WikiDex · Enchère gagnée',
+        `${item.title} — ${a.final_price ?? item.currentBid} Wikibidous`
+      );
+    }
+
+    await wdBgPersistItem(item);
+    return item;
+  }
+
+  if(!item.userId){
+    item.lastAction='Session utilisateur introuvable';
+    await wdBgPersistItem(item);
+    return item;
+  }
+
+  if(a.seller_id===item.userId){
+    item.enabled=false;
+    item.lastAction='Arrêt — tu es le vendeur';
+    wdBgAddLog(item,item.lastAction);
+    await wdBgPersistItem(item);
+    return item;
+  }
+
+  const isHighest=a.current_bidder_id===item.userId;
+
+  if(isHighest){
+    item.wasHighest=true;
+    item.lastAction=`En tête à ${item.currentBid}`;
+    await wdBgPersistItem(item);
+    return item;
+  }
+
+  if(item.wasHighest){
+    const outbidKey=
+      `${a.current_bidder_id||'none'}|${item.currentBid}`;
+
+    if(item.lastNotifiedOutbidKey!==outbidKey){
+      item.lastNotifiedOutbidKey=outbidKey;
+      await wdBgNotify(
+        `outbid-${item.listingId}`,
+        'WikiDex · Tu n’es plus en tête',
+        `${item.title} — enchère actuelle : ${item.currentBid} Wikibidous`
+      );
+    }
+  }
+
+  const base=Number(a.current_bid ?? a.base_amount ?? 0);
+  const next=wdBgRoundMoney(base+Number(item.step||1));
+
+  if(next>Number(item.max)+1e-9){
+    item.enabled=false;
+    item.lastAction=`Plafond atteint (${item.max})`;
+    wdBgAddLog(
+      item,
+      `Pas de surenchère : ${next} > plafond ${item.max}`
+    );
+
+    const capKey=`${base}|${item.max}`;
+    if(item.notifiedCapKey!==capKey){
+      item.notifiedCapKey=capKey;
+      await wdBgNotify(
+        `cap-${item.listingId}`,
+        'WikiDex · Plafond atteint',
+        `${item.title} — prochain palier ${next}, plafond ${item.max} Wikibidous.`
+      );
+    }
+
+    await wdBgPersistItem(item);
+    return item;
+  }
+
+  const attemptKey=
+    `${a.current_bidder_id||'none'}|${base}|${next}`;
+  const attemptNow=Date.now();
+
+  if(
+    item.lastAttemptKey===attemptKey &&
+    attemptNow-(item.lastAttemptAt||0)<8000
+  ){
+    item.lastAction='Attente confirmation serveur';
+    await wdBgPersistItem(item);
+    return item;
+  }
+
+  const end=a.end_at ? Date.parse(a.end_at) : NaN;
+  if(Number.isFinite(end) && end-Date.now()<500){
+    item.lastAction='Fin imminente — aucun POST';
+    await wdBgPersistItem(item);
+    return item;
+  }
+
+  item.lastAttemptKey=attemptKey;
+  item.lastAttemptAt=attemptNow;
+  item.lastAction=`Surenchère ${next} en cours…`;
+
+  // Persist the dedupe key BEFORE the POST.
+  const persisted=await wdBgPersistItem(item);
+  if(!persisted || persisted.enabled===false)return item;
+
+  // Preserve newest max/step before committing the bid.
+  item.max=persisted.max;
+  item.step=persisted.step;
+
+  const recheckNext=wdBgRoundMoney(
+    base+Number(item.step||1)
+  );
+
+  if(recheckNext>Number(item.max)+1e-9){
+    item.enabled=false;
+    item.lastAction=`Plafond atteint (${item.max})`;
+    await wdBgPersistItem(item);
+    return item;
+  }
+
+  try{
+    // ONE write attempt only. No retry here or in the caller.
+    await wdBgPageBid(tabId,item.listingId,recheckNext);
+    item.lastAction=`Surenchère envoyée : ${recheckNext}`;
+    wdBgAddLog(item,`POST /bid → ${recheckNext}`);
+  }catch(e){
+    item.lastAction='Enchère refusée';
+    wdBgAddLog(item,'POST refusé : '+(e.message||String(e)));
+  }
+
+  await wdBgPersistItem(item);
+  return item;
+}
+
+async function wdBgProcessAutoBids({force=false,itemId=null}={}){
+  const now=Date.now();
+
+  if(wdBgRunning)return {ok:true,skipped:'running'};
+  if(!force && now-wdBgLastTickAt<WD_BG_TICK_MIN_MS){
+    return {ok:true,skipped:'throttled'};
+  }
+
+  wdBgRunning=true;
+  wdBgLastTickAt=now;
+
+  try{
+    const obj=await chrome.storage.local.get(WD_BG_AUTOBID_KEY);
+    let items=Array.isArray(obj?.[WD_BG_AUTOBID_KEY])
+      ? obj[WD_BG_AUTOBID_KEY]
+      : [];
+
+    const enabled=items.filter(x=>x?.enabled);
+    if(!enabled.length){
+      await chrome.storage.local.set({
+        [WD_BG_ENGINE_STATUS_KEY]:{
+          active:false,
+          enabledCount:0,
+          lastTickAt:Date.now(),
+          reason:'no-enabled-autobids'
+        }
+      });
+      return {ok:true,processed:0};
+    }
+
+    const tab=await wdBgFindWikiMastersTab();
+    if(!tab){
+      await chrome.storage.local.set({
+        [WD_BG_ENGINE_STATUS_KEY]:{
+          active:false,
+          enabledCount:enabled.length,
+          lastTickAt:Date.now(),
+          reason:'no-wikimasters-tab'
+        }
+      });
+      return {
+        ok:false,
+        error:'Aucun onglet WikiMasters disponible.'
+      };
+    }
+
+    await wdBgCheckLowBalance(tab.id);
+
+    const targets=itemId
+      ? enabled.filter(x=>x.id===itemId)
+      : enabled;
+
+    for(const item of targets){
+      await wdBgProcessOne({...item},tab.id);
+    }
+
+    const after=await chrome.storage.local.get(WD_BG_AUTOBID_KEY);
+    items=Array.isArray(after?.[WD_BG_AUTOBID_KEY])
+      ? after[WD_BG_AUTOBID_KEY]
+      : [];
+
+    await chrome.storage.local.set({
+      [WD_BG_ENGINE_STATUS_KEY]:{
+        active:true,
+        enabledCount:items.filter(x=>x?.enabled).length,
+        tabId:tab.id,
+        lastTickAt:Date.now(),
+        reason:'ok'
+      }
+    });
+
+    return {ok:true,processed:targets.length};
+  }finally{
+    wdBgRunning=false;
+  }
+}
+
+async function wdBgEnsureOffscreen(){
+  const obj=await chrome.storage.local.get(WD_BG_AUTOBID_KEY);
+  const items=Array.isArray(obj?.[WD_BG_AUTOBID_KEY])
+    ? obj[WD_BG_AUTOBID_KEY]
+    : [];
+  const need=items.some(x=>x?.enabled);
+
+  let has=false;
+  try{
+    has=await chrome.offscreen.hasDocument();
+  }catch{}
+
+  if(need && !has){
+    try{
+      await chrome.offscreen.createDocument({
+        url:'offscreen.html',
+        reasons:['WORKERS'],
+        justification:
+          'Maintain WikiDex auto-bid heartbeat while popup and side panel are closed.'
+      });
+    }catch(e){
+      // Another event may have created it concurrently.
+      if(!/already|single offscreen/i.test(String(e?.message||e))){
+        throw e;
+      }
+    }
+  }
+
+  if(!need && has){
+    try{
+      await chrome.offscreen.closeDocument();
+    }catch{}
+  }
+}
+
+chrome.storage.onChanged.addListener((changes,area)=>{
+  if(area!=='local')return;
+  if(changes[WD_BG_AUTOBID_KEY]){
+    wdBgEnsureOffscreen().catch(()=>{});
+  }
+});
+
+chrome.runtime.onStartup.addListener(()=>{
+  wdBgEnsureOffscreen().catch(()=>{});
+});
+
+chrome.runtime.onInstalled.addListener(()=>{
+  wdBgEnsureOffscreen().catch(()=>{});
+});
+
+
 chrome.runtime.onMessage.addListener((m,sender,send)=>{
   (async()=>{
     if(m.type==='SESSION_USER_ID'){
