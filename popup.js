@@ -694,6 +694,180 @@ function normalizeCardKey(value){
   return uuid ? uuid[0].toLowerCase() : raw;
 }
 
+async function testMarketplaceCardFilter(tabId,cardId,listingId=''){
+  const result=await chrome.scripting.executeScript({
+    target:{tabId},
+    world:'MAIN',
+    args:[cardId,listingId],
+    func:async(cardId,listingId)=>{
+      const norm=v=>String(v||'').trim().toLowerCase();
+      const candidates=['card_id','cardId'];
+
+      for(const param of candidates){
+        try{
+          const url=new URL('https://www.wiki-masters.com/api/marketplace');
+          url.searchParams.set('page','1');
+          url.searchParams.set('limit','50');
+          url.searchParams.set('sort','recent');
+          url.searchParams.set(param,cardId);
+
+          const r=await fetch(url.toString(),{
+            method:'GET',
+            headers:{accept:'*/*'},
+            credentials:'include',
+            cache:'no-store'
+          });
+
+          const text=await r.text();
+          let data=null;
+          try{data=text?JSON.parse(text):null}catch{}
+          if(!r.ok)continue;
+
+          const rows=Array.isArray(data?.auctions)?data.auctions:[];
+          const ids=rows.map(a=>norm(a?.card_id||a?.card?.id)).filter(Boolean);
+          const wanted=norm(cardId);
+          const allMatch=ids.length>0 && ids.every(x=>x===wanted);
+          const targetSeen=rows.some(a=>String(a?.id||'')===String(listingId||''));
+
+          // Strong signal only: every returned auction belongs to the requested card.
+          if(allMatch){
+            return {supported:true,param,count:rows.length,targetSeen};
+          }
+        }catch{}
+      }
+
+      return {supported:false};
+    }
+  });
+
+  return result?.[0]?.result||{supported:false};
+}
+
+async function fetchWishlistMarketplaceTargeted(tabId,wishlistCardIds,userId,param){
+  const result=await chrome.scripting.executeScript({
+    target:{tabId},
+    world:'MAIN',
+    args:[wishlistCardIds,userId,param],
+    func:async(wishedIds,currentUserId,param)=>{
+      const normalize=v=>{
+        const raw=String(v||'').trim().toLowerCase().replace(/^api_/,'');
+        const m=raw.match(/[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}/i);
+        return m?m[0].toLowerCase():raw;
+      };
+
+      const matches=[];
+      const seenListings=new Set();
+      let requests=0;
+      let failed=0;
+
+      const emit=detail=>{
+        try{
+          window.postMessage({
+            source:'wikidex',
+            type:'WD_MARKET_SCAN_PROGRESS',
+            detail:{...detail,at:Date.now()}
+          },'*');
+        }catch{}
+      };
+
+      for(let i=0;i<wishedIds.length;i++){
+        const wanted=normalize(wishedIds[i]);
+        if(!wanted)continue;
+
+        emit({
+          phase:'targeted',
+          current:i+1,
+          total:wishedIds.length,
+          scanned:i,
+          matches:matches.length
+        });
+
+        try{
+          const url=new URL('https://www.wiki-masters.com/api/marketplace');
+          url.searchParams.set('page','1');
+          url.searchParams.set('limit','50');
+          url.searchParams.set('sort','recent');
+          url.searchParams.set(param,wanted);
+
+          const r=await fetch(url.toString(),{
+            method:'GET',
+            headers:{accept:'*/*'},
+            credentials:'include',
+            cache:'no-store'
+          });
+          requests++;
+
+          const text=await r.text();
+          let data=null;
+          try{data=text?JSON.parse(text):null}catch{}
+          if(!r.ok){failed++;continue;}
+
+          const rows=Array.isArray(data?.auctions)?data.auctions:[];
+          for(const a of rows){
+            if(!a?.id || seenListings.has(a.id))continue;
+
+            const marketId=normalize(a.card_id||a.card?.id);
+            if(marketId!==wanted)continue;
+            seenListings.add(a.id);
+
+            if(String(a.status||'').toLowerCase()!=='active')continue;
+            if(currentUserId && a.seller_id===currentUserId)continue;
+
+            const end=a.end_at?Date.parse(a.end_at):NaN;
+            if(Number.isFinite(end)&&end<=Date.now())continue;
+
+            matches.push({
+              listingId:a.id,
+              id:a.id,
+              cardId:a.card_id||a.card?.id,
+              sellerId:a.seller_id,
+              currentBid:a.current_bid,
+              baseAmount:a.base_amount,
+              effectiveBid:a.effective_bid,
+              endAt:a.end_at,
+              status:a.status,
+              currentBidderId:a.current_bidder_id,
+              title:a.card?.wikipedia_title||a.snapshot_search_document||a.card?.category||'Carte',
+              rarity:a.snapshot_rarity||a.card?.rarity||'',
+              category:a.card?.category||'',
+              imageUrl:a.card?.image_url||'',
+              sellerName:a.seller?.username||'',
+              owned:!!a.owned
+            });
+          }
+        }catch{
+          failed++;
+        }
+
+        await new Promise(r=>setTimeout(r,35));
+      }
+
+      emit({
+        phase:'done',
+        scanned:wishedIds.length,
+        matches:matches.length,
+        targeted:true
+      });
+
+      return {
+        ok:true,
+        targeted:true,
+        requests,
+        failed,
+        scanned:wishedIds.length,
+        pagesRead:requests,
+        matches,
+        wishlistCount:wishedIds.length,
+        marketUniqueCards:null,
+        truncated:false,
+        finished:true
+      };
+    }
+  });
+
+  return result?.[0]?.result||null;
+}
+
 async function fetchWishlistMarketplaceApi(tabId,wishlistCardIds,userId){
   const result=await chrome.scripting.executeScript({
     target:{tabId},
@@ -1024,6 +1198,9 @@ function marketProgressText(info=marketScanInfo){
   if(p.phase==='request'){
     return `Lecture page ${p.page} × ${p.limit}… · ${elapsed}s`;
   }
+  if(p.phase==='targeted'){
+    return `Recherche wishlist ${p.current}/${p.total} · ${p.matches||0} enchère(s) trouvée(s) · ${elapsed}s`;
+  }
 
   const block=p.block||info.pagesRead||0;
   const scanned=p.scanned??info.scannedListings??0;
@@ -1092,11 +1269,29 @@ async function scanWishlistMarketplace(){
       }
     }
 
-    const scan=await fetchWishlistMarketplaceApi(
-      tabId,
-      wished,
-      wishlist.userId||null
-    );
+    let cardFilter=null;
+    if(openListingProbe?.marketCardId){
+      cardFilter=await testMarketplaceCardFilter(
+        tabId,
+        openListingProbe.marketCardId,
+        openListingProbe.listingId
+      );
+    }
+
+    const scan=cardFilter?.supported
+      ? await fetchWishlistMarketplaceTargeted(
+          tabId,
+          wished,
+          wishlist.userId||null,
+          cardFilter.param
+        )
+      : await fetchWishlistMarketplaceApi(
+          tabId,
+          wished,
+          wishlist.userId||null
+        );
+
+    if(scan)scan.cardFilter=cardFilter;
 
     if(!scan)throw new Error('Aucune réponse du scanner marché.');
     if(!scan.ok)throw new Error(scan.error||'Erreur pendant le scan du marché.');
@@ -1121,6 +1316,10 @@ async function scanWishlistMarketplace(){
       recoveredPages:scan.recoveredPages||0,
       failedSegments:Array.isArray(scan.failedSegments)?scan.failedSegments:[],
       skippedAuctionsMax:scan.skippedAuctionsMax||0,
+      targeted:!!scan.targeted,
+      cardFilter:scan.cardFilter||null,
+      requests:scan.requests||0,
+      failedRequests:scan.failed||0,
       sourceUrl:'API /api/marketplace'
     };
 
@@ -1507,7 +1706,12 @@ async function render(){
                 ${marketScanInfo.recoveredPages?` · ${marketScanInfo.recoveredPages} page(s) récupérée(s) par découpage`:''}
                 ${marketScanInfo.skippedAuctionsMax?` · jusqu’à ${marketScanInfo.skippedAuctionsMax} enchère(s) non lisible(s)`:''}
                 ${marketScanInfo.truncated?' · LIMITE DE SCAN ATTEINTE':''}
-                <div class="marketDiag">Wishlist lue : <b>${marketScanInfo.wishlistCount||0}</b> carte(s) · Marché : <b>${marketScanInfo.marketUniqueCards||0}</b> card_id unique(s)</div>
+                <div class="marketDiag">
+                  Wishlist lue : <b>${marketScanInfo.wishlistCount||0}</b> carte(s)
+                  ${marketScanInfo.targeted
+                    ? ` · mode ciblé par card_id · ${marketScanInfo.requests||0} requête(s)`
+                    : ` · Marché : <b>${marketScanInfo.marketUniqueCards||0}</b> card_id unique(s)`}
+                </div>
                 ${marketScanInfo.openListingProbe?.marketCardId
                   ? `<div class="marketProbe ${marketScanInfo.openListingProbe.inWishlist?'ok':'bad'}">
                       Enchère ouverte : <b>${esc(marketScanInfo.openListingProbe.title)}</b><br>
