@@ -1918,6 +1918,14 @@ async function wdBgProcessOne(item,tabId){
     return item;
   }
 
+  const previouslyHighest=!!(
+    item.wasHighest ||
+    (
+      item.userId &&
+      item.currentBidderId===item.userId
+    )
+  );
+
   item.userId=await wdBgGetUserId(tabId,item);
   item.title=wdBgAuctionTitle(a);
   item.currentBid=Number(a.current_bid ?? a.base_amount ?? 0);
@@ -1977,7 +1985,8 @@ async function wdBgProcessOne(item,tabId){
     return item;
   }
 
-  if(item.wasHighest){
+  if(previouslyHighest){
+    item.wasHighest=true;
     const outbidKey=
       `${a.current_bidder_id||'none'}|${item.currentBid}`;
 
