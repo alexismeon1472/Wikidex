@@ -1665,6 +1665,7 @@ async function wdBgFindWikiMastersTab(){
 
   for(const tab of tabs){
     if(!tab.id || tab.discarded)continue;
+    if(String(tab.url||'').includes('#wikidex-sync'))continue;
     try{
       const pong=await chrome.tabs.sendMessage(tab.id,{type:'WD_PING'});
       if(pong?.ok)return tab;
