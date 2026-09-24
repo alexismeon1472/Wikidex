@@ -1890,6 +1890,7 @@ async function createAutoBid(input=null){
 
     if(!existing)autoBids.push(item);
     await saveAutoBids();
+    chrome.runtime.sendMessage({type:'AUTOBID_WAKE'}).catch(()=>{});
     autoDraft={listing:'',max:'',step:String(step||1)};
     await persistUiState();
     $('status').textContent=`Auto-enchère ${item.enabled?'activée':'créée mais inactive'} : ${item.title}`;
@@ -2034,7 +2035,17 @@ async function tickAutoBids(){
 }
 function ensureAutoTimer(){
   if(autoTimer)return;
-  autoTimer=setInterval(tickAutoBids,4000);
+  autoTimer=setInterval(async()=>{
+    const active=document.activeElement;
+    const editing=!!active?.closest?.('.autoForm,.marketSuggestionForm');
+    if(editing)return;
+
+    const x=await chrome.storage.local.get(AUTOBID_KEY).catch(()=>({}));
+    const fresh=Array.isArray(x?.[AUTOBID_KEY])?x[AUTOBID_KEY]:[];
+    autoBids=fresh;
+
+    if(tab==='autobid')render();
+  },2500);
 }
 async function toggleAutoBid(id){
   const item=findAuto(id);if(!item)return;
@@ -2042,7 +2053,9 @@ async function toggleAutoBid(id){
   item.lastAction=item.enabled?'Surveillance activée':'Pause manuelle';
   addAutoLog(item,item.lastAction);
   await saveAutoBids();
-  if(item.enabled)tickAutoBids();
+  if(item.enabled){
+    chrome.runtime.sendMessage({type:'AUTOBID_WAKE'}).catch(()=>{});
+  }
   render();
 }
 async function deleteAutoBid(id){
@@ -2054,8 +2067,15 @@ async function refreshAutoBid(id){
   const item=findAuto(id);if(!item)return;
   item.nextPollAt=0;
   item.lastError='';
-  await processAutoBid(item);
   await saveAutoBids();
+
+  const r=await chrome.runtime.sendMessage({
+    type:'AUTOBID_PROCESS_ONE',
+    id
+  }).catch(e=>({error:e?.message||String(e)}));
+
+  if(r?.error)$('status').textContent='Actualisation auto-enchère : '+r.error;
+  await loadAutoBids();
   render();
 }
 function autoState(item){
@@ -2163,8 +2183,8 @@ async function render(){
         <button id="autoAdd" class="primary">Ajouter</button>
       </div>
       <div class="muted" style="font-size:11px;margin-bottom:9px">
-        Surveillance toutes les ~2,5 s tant que WikiDex est ouvert. Le panneau latéral est recommandé.
-        WikiDex ne dépasse jamais le plafond défini.
+        Surveillance en arrière-plan toutes les ~2,5 s tant qu’au moins un onglet WikiMasters reste ouvert.
+        Le popup et le panneau latéral peuvent être fermés. WikiDex ne dépasse jamais le plafond défini.
       </div>
       ${rows||'<div class="empty">Aucune auto-enchère configurée.</div>'}
 
@@ -2508,6 +2528,22 @@ $('openSide').onclick=async()=>{
   }
 };
 bindRarityFilters();
+
+chrome.storage.onChanged.addListener((changes,area)=>{
+  if(area!=='local')return;
+  if(!changes[AUTOBID_KEY])return;
+
+  autoBids=Array.isArray(changes[AUTOBID_KEY].newValue)
+    ? changes[AUTOBID_KEY].newValue
+    : [];
+
+  if(tab==='autobid'){
+    const active=document.activeElement;
+    const editing=!!active?.closest?.('.autoForm,.marketSuggestionForm');
+    if(!editing)render();
+  }
+});
+
 chrome.runtime.onMessage.addListener(m=>{
   if(m.type==='WD_MARKET_SCAN_PROGRESS' && marketScanInfo.status==='scan'){
     const p=m.detail||{};
@@ -2533,6 +2569,6 @@ chrome.runtime.onMessage.addListener(m=>{
   ensureAutoTimer();
   await restoreUiState();
   await render();
+  chrome.runtime.sendMessage({type:'AUTOBID_WAKE'}).catch(()=>{});
   if(tab==='autobid')refreshWikiBidouBalance({silent:true});
-  tickAutoBids();
 })();
