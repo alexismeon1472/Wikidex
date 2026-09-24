@@ -1397,9 +1397,38 @@ async function wdAllWishlistCardIds(tabId=null){
     if(rows.length<limit)break;
   }
 
+  const cardIds=[...new Set(ids)];
+  const cards=[];
+  let cardsLookupError='';
+
+  // Enrich the wishlist with card titles so the marketplace can be searched
+  // by text when its global feed is incomplete.
+  for(const chunk of wdChunks(cardIds,80)){
+    const url=new URL(WD_SUPABASE_URL+'/rest/v1/cards');
+    url.searchParams.set('select','id,wikipedia_title,rarity');
+    url.searchParams.set('id',`in.(${chunk.join(',')})`);
+
+    const r=await wdSupabaseRequest(url.pathname+url.search,session);
+    if(!r.ok){
+      cardsLookupError=`cards HTTP ${r.status}: ${String(r.text||'').slice(0,120)}`;
+      break;
+    }
+
+    for(const row of Array.isArray(r.data)?r.data:[]){
+      if(!row?.id)continue;
+      cards.push({
+        id:String(row.id),
+        title:String(row.wikipedia_title||''),
+        rarity:String(row.rarity||'')
+      });
+    }
+  }
+
   return {
     userId:session.userId,
-    cardIds:[...new Set(ids)]
+    cardIds,
+    cards,
+    cardsLookupError
   };
 }
 
