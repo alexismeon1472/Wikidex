@@ -857,52 +857,62 @@ async function fetchWishlistMarketplaceByTitle(tabId,wishlistCards,userId,param)
           url.searchParams.set('sort','recent');
           url.searchParams.set(param,title);
 
-          const r=await fetch(url.toString(),{
-            method:'GET',
-            headers:{accept:'*/*'},
-            credentials:'include',
-            cache:'no-store'
-          });
-          requests++;
-
-          const text=await r.text();
-          let data=null;
-          try{data=text?JSON.parse(text):null}catch{}
-          if(!r.ok){failed++;continue;}
-
-          const rows=Array.isArray(data?.auctions)?data.auctions:[];
-          for(const a of rows){
-            if(!a?.id || seenListings.has(a.id))continue;
-
-            const marketId=normalize(a.card_id||a.card?.id);
-            if(marketId!==wanted)continue;
-            seenListings.add(a.id);
-
-            if(String(a.status||'').toLowerCase()!=='active')continue;
-            if(currentUserId && a.seller_id===currentUserId)continue;
-
-            const end=a.end_at?Date.parse(a.end_at):NaN;
-            if(Number.isFinite(end)&&end<=Date.now())continue;
-
-            matches.push({
-              listingId:a.id,
-              id:a.id,
-              cardId:a.card_id||a.card?.id,
-              sellerId:a.seller_id,
-              currentBid:a.current_bid,
-              baseAmount:a.base_amount,
-              effectiveBid:a.effective_bid,
-              endAt:a.end_at,
-              status:a.status,
-              currentBidderId:a.current_bidder_id,
-              title:a.card?.wikipedia_title||a.snapshot_search_document||a.card?.category||title,
-              rarity:a.snapshot_rarity||a.card?.rarity||card.rarity||'',
-              category:a.card?.category||'',
-              imageUrl:a.card?.image_url||'',
-              sellerName:a.seller?.username||'',
-              owned:!!a.owned
+          const controller=new AbortController();
+          const timer=setTimeout(()=>controller.abort(),7000);
+          let r;
+          try{
+            r=await fetch(url.toString(),{
+              method:'GET',
+              headers:{accept:'*/*'},
+              credentials:'include',
+              cache:'no-store',
+              signal:controller.signal
             });
+            requests++;
+
+            const text=await r.text();
+            let data=null;
+            try{data=text?JSON.parse(text):null}catch{}
+            if(!r.ok){failed++;continue;}
+
+            const rows=Array.isArray(data?.auctions)?data.auctions:[];
+            for(const a of rows){
+              if(!a?.id || seenListings.has(a.id))continue;
+
+              const marketId=normalize(a.card_id||a.card?.id);
+              if(marketId!==wanted)continue;
+              seenListings.add(a.id);
+
+              if(String(a.status||'').toLowerCase()!=='active')continue;
+              if(currentUserId && a.seller_id===currentUserId)continue;
+
+              const end=a.end_at?Date.parse(a.end_at):NaN;
+              if(Number.isFinite(end)&&end<=Date.now())continue;
+
+              matches.push({
+                listingId:a.id,
+                id:a.id,
+                cardId:a.card_id||a.card?.id,
+                sellerId:a.seller_id,
+                currentBid:a.current_bid,
+                baseAmount:a.base_amount,
+                effectiveBid:a.effective_bid,
+                endAt:a.end_at,
+                status:a.status,
+                currentBidderId:a.current_bidder_id,
+                title:a.card?.wikipedia_title||a.snapshot_search_document||a.card?.category||title,
+                rarity:a.snapshot_rarity||a.card?.rarity||card.rarity||'',
+                category:a.card?.category||'',
+                imageUrl:a.card?.image_url||'',
+                sellerName:a.seller?.username||'',
+                owned:!!a.owned
+              });
+            }
+          }finally{
+            clearTimeout(timer);
           }
+
+          continue;
         }catch{
           failed++;
         }
@@ -1406,10 +1416,6 @@ function marketProgressText(info=marketScanInfo){
   if(p.phase==='testCardFilter'){
     return `Test du filtre card_id… · ${elapsed}s`;
   }
-  if(p.phase==='testTextFilter'){
-    return `Test recherche marché : ${p.param||'q'}… · ${elapsed}s`;
-  }
-
   const block=p.block||info.pagesRead||0;
   const scanned=p.scanned??info.scannedListings??0;
   const matches=p.matches??info.wishlistMatches??0;
@@ -1484,56 +1490,42 @@ async function scanWishlistMarketplace(){
       }
     }
 
-    let cardFilter=null;
-    let textFilter=null;
-
-    if(openListingProbe?.marketCardId){
-      setMarketProgress({phase:'testCardFilter'});
-      cardFilter=await testMarketplaceCardFilter(
-        tabId,
-        openListingProbe.marketCardId,
-        openListingProbe.listingId
-      );
-    }
-
     const wishlistCards=Array.isArray(wishlist.cards)?wishlist.cards:[];
-    if(
-      !cardFilter?.supported &&
-      openListingProbe?.title &&
-      openListingProbe?.listingId &&
-      wishlistCards.length
-    ){
-      setMarketProgress({phase:'testTextFilter',param:'q/search/query'});
-      textFilter=await testMarketplaceTextFilter(
+
+    // q= has already been validated against a real open auction.
+    // Do not waste time re-probing q/search/query on every scan.
+    let scan=null;
+
+    if(wishlistCards.length){
+      setMarketProgress({
+        phase:'targetedTitle',
+        current:0,
+        total:wishlistCards.length,
+        title:'démarrage',
+        matches:0
+      });
+
+      scan=await fetchWishlistMarketplaceByTitle(
         tabId,
-        openListingProbe.title,
-        openListingProbe.listingId
+        wishlistCards,
+        wishlist.userId||null,
+        'q'
+      );
+
+      if(scan){
+        scan.textFilter={supported:true,param:'q',cached:true};
+      }
+    }else{
+      // Fallback only if wishlist titles could not be resolved.
+      scan=await fetchWishlistMarketplaceApi(
+        tabId,
+        wished,
+        wishlist.userId||null
       );
     }
-
-    const scan=cardFilter?.supported
-      ? await fetchWishlistMarketplaceTargeted(
-          tabId,
-          wished,
-          wishlist.userId||null,
-          cardFilter.param
-        )
-      : textFilter?.supported
-        ? await fetchWishlistMarketplaceByTitle(
-            tabId,
-            wishlistCards,
-            wishlist.userId||null,
-            textFilter.param
-          )
-        : await fetchWishlistMarketplaceApi(
-            tabId,
-            wished,
-            wishlist.userId||null
-          );
 
     if(scan){
-      scan.cardFilter=cardFilter;
-      scan.textFilter=textFilter;
+      scan.cardFilter=null;
       scan.cardsLookupError=wishlist.cardsLookupError||'';
       scan.wishlistTitles=wishlistCards.length;
     }
