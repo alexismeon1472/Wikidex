@@ -1825,6 +1825,201 @@ async function addSuggestionAutoBid(listingId){
   render();
 }
 
+async function waitWikiMastersSyncTab(tabId,timeout=15000){
+  const current=await chrome.tabs.get(tabId).catch(()=>null);
+  if(current?.status==='complete')return;
+
+  await new Promise((resolve,reject)=>{
+    let done=false;
+
+    const cleanup=()=>{
+      if(done)return;
+      done=true;
+      chrome.tabs.onUpdated.removeListener(onUpdated);
+      clearTimeout(timer);
+    };
+
+    const onUpdated=(id,info)=>{
+      if(id!==tabId || info.status!=='complete')return;
+      cleanup();
+      resolve();
+    };
+
+    const timer=setTimeout(()=>{
+      cleanup();
+      reject(new Error('Chargement de WikiMasters trop long.'));
+    },timeout);
+
+    chrome.tabs.onUpdated.addListener(onUpdated);
+  });
+}
+
+async function syncMyBidsFromWikiMasters(){
+  const btn=$('syncMyBids');
+  if(btn)btn.disabled=true;
+  $('status').textContent='Synchronisation de Marché → Mes enchères…';
+
+  let tempTab=null;
+
+  try{
+    tempTab=await chrome.tabs.create({
+      url:'https://www.wiki-masters.com/marketplace',
+      active:false
+    });
+
+    await waitWikiMastersSyncTab(tempTab.id);
+    await new Promise(r=>setTimeout(r,500));
+
+    const found=await chrome.tabs.sendMessage(tempTab.id,{
+      type:'WD_DISCOVER_MY_BIDS'
+    });
+
+    if(found?.error)throw new Error(found.error);
+
+    const listingIds=[...new Set(
+      (Array.isArray(found?.ids)?found.ids:[])
+        .map(x=>String(x||'').toLowerCase())
+        .filter(Boolean)
+    )];
+
+    if(!listingIds.length){
+      throw new Error(
+        found?.tabFound
+          ? 'Aucune enchère active détectée dans « Mes enchères ».'
+          : 'L’onglet « Mes enchères » n’a pas été détecté sur la page Marché.'
+      );
+    }
+
+    let userId=null;
+    try{
+      const u=await chrome.runtime.sendMessage({
+        type:'SESSION_USER_ID',
+        tabId:tempTab.id
+      });
+      if(!u?.error)userId=u?.userId||null;
+    }catch{}
+
+    let added=0;
+    let updated=0;
+    let failed=0;
+
+    for(let i=0;i<listingIds.length;i++){
+      const listingId=listingIds[i];
+      $('status').textContent=`Synchronisation ${i+1}/${listingIds.length}…`;
+
+      try{
+        const page=await runMarketplaceMainGet(tempTab.id,listingId);
+        const a=page?.data?.auction;
+        if(!page?.ok || !a){
+          failed++;
+          continue;
+        }
+
+        const existing=autoBids.find(x=>x.listingId===listingId);
+        const currentBid=Number(a.current_bid ?? a.base_amount ?? 0);
+        const currentBidderId=a.current_bidder_id||null;
+        const closed=auctionClosed(a);
+
+        if(existing){
+          existing.title=auctionTitle(a);
+          existing.currentBid=currentBid;
+          existing.currentBidderId=currentBidderId;
+          existing.userId=userId||existing.userId||null;
+          existing.status=a.status||'';
+          existing.endAt=a.end_at||null;
+          existing.lastSuccessAt=Date.now();
+          existing.lastError='';
+          existing.consecutiveErrors=0;
+
+          if(existing.mode==='track'){
+            existing.enabled=!closed;
+            existing.wasHighest=!!(
+              existing.userId &&
+              currentBidderId===existing.userId
+            );
+            existing.lastAction=closed
+              ? 'Synchronisée — enchère terminée'
+              : 'Synchronisée depuis WikiMasters — suivi actif';
+          }
+
+          addAutoLog(existing,'Synchronisée depuis WikiMasters');
+          updated++;
+          continue;
+        }
+
+        const item={
+          id:crypto.randomUUID(),
+          listingId,
+          mode:'track',
+          enabled:!closed,
+          max:null,
+          step:1,
+          logs:[],
+          title:auctionTitle(a),
+          currentBid,
+          currentBidderId,
+          userId:userId||null,
+          status:a.status||'',
+          endAt:a.end_at||null,
+          sourceTabId:null,
+          lastAttemptKey:null,
+          lastAttemptAt:0,
+          lastSuccessAt:Date.now(),
+          consecutiveErrors:0,
+          nextPollAt:0,
+          lastError:'',
+          wasHighest:!!(
+            userId &&
+            currentBidderId===userId
+          ),
+          lastAction:closed
+            ? 'Synchronisée — enchère terminée'
+            : 'Synchronisée depuis WikiMasters — suivi uniquement'
+        };
+
+        addAutoLog(item,'Importée depuis « Mes enchères » en mode suivi');
+        autoBids.push(item);
+        added++;
+      }catch{
+        failed++;
+      }
+    }
+
+    await saveAutoBids();
+    await persistUiState();
+    chrome.runtime.sendMessage({type:'AUTOBID_WAKE'}).catch(()=>{});
+
+    $('status').textContent=
+      `Synchronisation terminée · +${added} nouvelle(s) · ${updated} déjà connue(s) · ${failed} échec(s)`;
+
+    await render();
+  }catch(e){
+    $('status').textContent='Synchronisation impossible : '+(e.message||String(e));
+  }finally{
+    if(tempTab?.id)chrome.tabs.remove(tempTab.id).catch(()=>{});
+    if(btn)btn.disabled=false;
+  }
+}
+
+async function configureTrackedAutoBid(id){
+  const item=findAuto(id);
+  if(!item)return;
+
+  autoDraft={
+    listing:`https://www.wiki-masters.com/marketplace/${item.listingId}`,
+    max:'',
+    step:String(item.step||1)
+  };
+
+  await persistUiState();
+
+  if($('autoListing'))$('autoListing').value=autoDraft.listing;
+  if($('autoMax'))$('autoMax').value='';
+  if($('autoStep'))$('autoStep').value=autoDraft.step;
+
+  $('status').textContent=`Définis le plafond AutoBid pour ${item.title||'cette enchère'}.`;
+  $('autoMax')?.focus();
+}
 async function createAutoBid(input=null){
   const hasExplicitInput=
     input &&
