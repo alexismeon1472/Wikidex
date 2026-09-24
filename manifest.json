@@ -1,0 +1,47 @@
+{
+  "manifest_version": 3,
+  "name": "WikiDex for WikiMasters",
+  "version": "0.11.2",
+  "description": "Recherche API WikiMasters, multi-sélection, collections locales et export vers la wishlist.",
+  "permissions": [
+    "cookies",
+    "scripting",
+    "sidePanel",
+    "storage",
+    "tabs",
+    "unlimitedStorage"
+  ],
+  "host_permissions": [
+    "https://cyrxjeppjqsxxjayfrur.supabase.co/*",
+    "https://wiki-masters.com/*",
+    "https://www.wiki-masters.com/*"
+  ],
+  "background": {
+    "service_worker": "background.js"
+  },
+  "content_scripts": [
+    {
+      "matches": [
+        "https://www.wiki-masters.com/*",
+        "https://wiki-masters.com/*"
+      ],
+      "js": [
+        "content.js"
+      ],
+      "css": [
+        "content.css"
+      ],
+      "run_at": "document_idle"
+    }
+  ],
+  "action": {
+    "default_popup": "popup.html",
+    "default_title": "WikiDex"
+  },
+  "content_security_policy": {
+    "extension_pages": "script-src 'self'; object-src 'self'; img-src 'self' https: http: data: blob:;"
+  },
+  "side_panel": {
+    "default_path": "popup.html"
+  }
+}

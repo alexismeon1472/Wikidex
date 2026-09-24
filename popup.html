@@ -1,0 +1,133 @@
+<!doctype html><html lang="fr"><head><meta charset="utf-8"><title>WikiDex</title>
+<style>
+*{box-sizing:border-box}:root{color-scheme:dark}
+body{width:620px;height:700px;margin:0;background:#0e1014;color:#f4f6f8;font:13px system-ui,sans-serif;overflow:hidden}
+header{padding:12px;background:#12151b;border-bottom:1px solid #29303a}
+h1{font-size:18px;margin:0 0 8px}.row{display:flex;gap:7px;align-items:center}
+input,select,button{border:0;border-radius:7px;padding:8px;background:#242a34;color:#fff;font:inherit}
+input{outline:1px solid #343c49}.grow{flex:1}button{cursor:pointer;font-weight:650}.green{background:#214b39}.primary{background:#6857ff}.danger{background:#4a2027}
+.tabs{display:flex;gap:6px;margin-top:8px}.tab{flex:1}.tab.active{background:#414a58}
+#status{font-size:11px;color:#b9c3d0;margin-top:7px;white-space:pre-wrap}
+#body{height:570px;overflow:auto;padding:10px}
+.toolbar{display:flex;gap:6px;align-items:center;margin-bottom:8px;position:sticky;top:-10px;background:#0e1014;padding:5px 0;z-index:5}
+.toolbar .spacer{flex:1}.grid{display:grid;grid-template-columns:repeat(4,1fr);gap:8px}
+.card{background:#171b22;border:1px solid #29313c;border-radius:9px;overflow:hidden;position:relative}
+.card.selected{outline:2px solid #6f60ff}.pic{height:92px;background:#222;display:flex;align-items:center;justify-content:center;overflow:hidden}
+.pic img{width:100%;height:100%;object-fit:cover}.noimg{font-size:10px;color:#788392;text-align:center;padding:6px}
+.p{padding:7px}.title{font-weight:750;font-size:11.5px;line-height:1.15;height:27px;overflow:hidden}
+.sub{font-size:10px;color:#9ca6b4;line-height:1.2;height:25px;overflow:hidden;margin-top:3px}.badge{font-size:9px;background:#303849;border-radius:4px;padding:2px 4px;display:inline-block;margin-top:4px}
+.check{position:absolute;top:5px;left:5px;z-index:3;width:18px;height:18px}
+.colRow{display:flex;gap:7px;align-items:center;background:#171b22;border:1px solid #29313c;padding:9px;border-radius:8px;margin-bottom:6px}
+.colRow .name{flex:1;font-weight:700;cursor:pointer}.muted{color:#8f99a8}.empty{text-align:center;padding:50px 20px;color:#8f99a8}
+dialog{width:430px;background:#171b22;color:#fff;border:1px solid #343c49;border-radius:10px;padding:14px}
+.choice{display:block;width:100%;text-align:left;margin-top:6px}.debug{font:10px ui-monospace,monospace;white-space:pre-wrap;max-height:250px;overflow:auto;background:#0b0d10;padding:8px;border-radius:6px}
+
+.rarity-filter-row{gap:5px;flex-wrap:wrap}
+.rarityChip{padding:4px 8px;min-width:31px;border:1px solid #3c4552;background:#1b2028;color:#8993a1;border-radius:999px;font-size:10px;font-weight:800}
+.rarityChip.active{background:#485466;color:#fff;border-color:#66758a;box-shadow:inset 0 0 0 1px #ffffff10}
+.rarityChip[data-rarity="L"].active{background:#7d621c}
+.rarityChip[data-rarity="UR"].active{background:#7b3f22}
+.rarityChip[data-rarity="SR"].active{background:#60478b}
+.rarityChip[data-rarity="R"].active{background:#315a83}
+.rarityChip[data-rarity="PC"].active{background:#376858}
+.rarityChip[data-rarity="C"].active{background:#4c555f}
+.miniBtn{padding:4px 7px;font-size:10px;background:#242a34}
+
+
+#importDlg{width:min(590px,94vw);max-height:88vh}
+#importText{width:100%;height:245px;resize:vertical;background:#0d1015;border:1px solid #343c49;border-radius:7px;color:#fff;padding:8px;font:11px ui-monospace,monospace}
+#importProgress{margin-top:8px;font-size:11px;color:#bac5d3;white-space:pre-wrap}
+.importReport{max-height:220px;overflow:auto;margin-top:8px;background:#0d1015;border-radius:7px;padding:8px;font-size:11px}
+.importOk{color:#91d8a8}.importWarn{color:#f0c674}.importMiss{color:#e88b91}
+
+
+.autoForm{display:grid;grid-template-columns:1fr 100px 90px auto;gap:6px;align-items:center;margin-bottom:10px}
+.autoRow{background:#171b22;border:1px solid #29313c;border-radius:9px;padding:10px;margin-bottom:8px}
+.autoTop{display:flex;gap:8px;align-items:flex-start}
+.autoTitle{font-weight:800;flex:1}.autoMeta{font-size:11px;color:#aab4c1;line-height:1.45;margin-top:5px}
+.autoState{font-size:11px;font-weight:800;padding:3px 7px;border-radius:999px;background:#303846}
+.autoState.on{background:#214b39}.autoState.stop{background:#4a2027}.autoState.wait{background:#52451f}
+.autoLog{margin-top:7px;font:10px ui-monospace,monospace;color:#8f99a8;white-space:pre-wrap;max-height:72px;overflow:auto}
+.autoBtns{display:flex;gap:5px;margin-top:8px;flex-wrap:wrap}
+.autoBtns button{padding:5px 7px;font-size:10px}
+@media (max-width:520px){.autoForm{grid-template-columns:1fr 1fr}.autoForm .wide{grid-column:1/-1}}
+
+
+.marketScanBar{display:flex;gap:6px;align-items:center;margin:12px 0 8px;padding-top:10px;border-top:1px solid #29313c}
+.marketSuggestion{background:#141920;border:1px solid #29313c;border-radius:9px;padding:9px;margin-bottom:7px}
+.marketSuggestionTop{display:flex;gap:7px;align-items:flex-start}
+.marketSuggestionTitle{font-weight:800;flex:1}
+.marketSuggestionMeta{font-size:10.5px;color:#aab4c1;line-height:1.4;margin-top:4px}
+.marketSuggestionForm{display:grid;grid-template-columns:90px 75px 1fr;gap:5px;margin-top:7px}
+.marketSuggestionForm input{width:100%}
+.marketSuggestionNote{font-size:10px;color:#8893a2;margin-top:4px}
+.marketBadge{font-size:9px;font-weight:800;background:#303849;border-radius:999px;padding:3px 6px;white-space:nowrap}
+
+</style></head><body>
+<header>
+<div class="row" style="margin-bottom:8px">
+<h1 style="margin:0;flex:1">WikiDex v0.11.2</h1>
+<button id="openSide">⇱ Panneau latéral</button>
+</div>
+<div class="row">
+<input id="q" class="grow" placeholder="Rechercher toutes les cartes WikiMasters…">
+<button id="go" class="green">Rechercher</button>
+</div>
+<div class="row rarity-filter-row" style="margin-top:7px">
+<span class="muted" style="font-size:11px;font-weight:700">Afficher :</span>
+<button class="rarityChip active" data-rarity="L" title="Légendaire — 1 741 cartes">L</button>
+<button class="rarityChip active" data-rarity="UR" title="Ultra Rare — 12 315 cartes">UR</button>
+<button class="rarityChip active" data-rarity="SR" title="Super Rare — 66 809 cartes">SR</button>
+<button class="rarityChip active" data-rarity="R" title="Rare — 179 837 cartes">R</button>
+<button class="rarityChip" data-rarity="PC" title="Peu Commune — 517 965 cartes">PC</button>
+<button class="rarityChip" data-rarity="C" title="Commune — 1 995 429 cartes">C</button>
+<span class="grow"></span>
+<button id="rarityAll" class="miniBtn">Toutes</button>
+<button id="rarityHigh" class="miniBtn">Rares</button>
+</div>
+<div class="tabs">
+<button class="tab active" data-tab="results">Résultats</button>
+<button class="tab" data-tab="collections">Collections</button>
+<button class="tab" data-tab="library">Bibliothèque</button>
+<button class="tab" data-tab="autobid">Auto-enchères</button>
+</div>
+<div id="status">Prêt.</div>
+</header>
+<div id="body"></div>
+
+<dialog id="addDlg">
+<b>Ajouter les cartes sélectionnées</b>
+<div id="choices"></div>
+<div class="row" style="margin-top:9px"><input id="newName" class="grow" placeholder="Nouvelle collection…"><button id="create">Créer + ajouter</button></div>
+<button id="closeDlg" style="width:100%;margin-top:9px">Fermer</button>
+</dialog>
+
+<dialog id="debugDlg">
+<b>Diagnostic API</b>
+<div id="debugText" class="debug"></div>
+<button id="debugClose" style="width:100%;margin-top:9px">Fermer</button>
+</dialog>
+
+
+<dialog id="importDlg">
+  <b>Importer une liste de cartes</b>
+  <div class="row" style="margin-top:9px">
+    <input id="importCollectionName" class="grow" value="Pokédex France" placeholder="Nom de la collection">
+    <button id="loadFrancePreset">Préremplir Pokédex France</button>
+  </div>
+  <p class="muted" style="font-size:11px;margin:8px 0">
+    Colle un tableau Markdown, CSV ou des lignes « département | carte ».
+    WikiDex cherche d’abord L/UR/SR/R puis PC/C seulement si nécessaire.
+  </p>
+  <textarea id="importText" placeholder="| 01 | Ain | Poulet de Bresse |
+| 02 | Aisne | Chemin des Dames |
+..."></textarea>
+  <div class="row" style="margin-top:8px">
+    <button id="startImport" class="primary">Importer automatiquement</button>
+    <button id="cancelImport">Fermer</button>
+  </div>
+  <div id="importProgress"></div>
+  <div id="importReport" class="importReport" hidden></div>
+</dialog>
+
+<script src="popup.js"></script></body></html>
