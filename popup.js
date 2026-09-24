@@ -13,6 +13,7 @@ let suggestionDrafts={};
 let marketSuggestions=[];
 let marketScanInfo={status:'',scannedListings:0,wishlistMatches:0,sourceUrl:'',startedAt:0,progress:null};
 let wikibidouBalance={amount:null,status:'idle',updatedAt:0,error:''};
+let autoEngineStatus={active:false,enabledCount:0,lastTickAt:0,reason:'unknown'};
 
 
 const UI_STATE_KEY='wikidexUiStateV077';
@@ -2142,6 +2143,27 @@ async function render(){
 
 
   if(tab==='autobid'){
+    autoEngineStatus=await chrome.runtime.sendMessage({
+      type:'AUTOBID_STATUS'
+    }).catch(()=>({
+      active:false,
+      enabledCount:autoBids.filter(x=>x.enabled).length,
+      lastTickAt:0,
+      reason:'unavailable'
+    }));
+
+    const engineLabel=autoEngineStatus.active
+      ? 'ACTIF'
+      : autoEngineStatus.reason==='no-wikimasters-tab'
+        ? 'EN ATTENTE — ouvre WikiMasters'
+        : autoEngineStatus.enabledCount
+          ? 'EN ATTENTE'
+          : 'AUCUNE AUTO-ENCHÈRE ACTIVE';
+
+    const engineAge=autoEngineStatus.lastTickAt
+      ? Math.max(0,Math.round((Date.now()-autoEngineStatus.lastTickAt)/1000))
+      : null;
+
     const rows=autoBids.map(item=>{
       const st=autoState(item);
       const end=item.endAt ? new Date(item.endAt).toLocaleString('fr-FR') : '—';
@@ -2182,9 +2204,12 @@ async function render(){
         <input id="autoStep" type="number" min="0.01" step="0.01" value="${esc(autoDraft.step||'1')}" placeholder="Pas">
         <button id="autoAdd" class="primary">Ajouter</button>
       </div>
-      <div class="muted" style="font-size:11px;margin-bottom:9px">
-        Surveillance en arrière-plan toutes les ~2,5 s tant qu’au moins un onglet WikiMasters reste ouvert.
-        Le popup et le panneau latéral peuvent être fermés. WikiDex ne dépasse jamais le plafond défini.
+      <div class="autoEngineStatus">
+        <b>Moteur arrière-plan : ${esc(engineLabel)}</b>
+        ${engineAge!==null?` · dernier tick il y a ${engineAge}s`:''}<br>
+        Surveillance ~2,5 s tant qu’au moins un onglet WikiMasters reste ouvert.
+        Le popup et le panneau peuvent être fermés.<br>
+        Notifications : perte de tête · enchère gagnée · plafond atteint · solde ≤ 100 Wikibidous.
       </div>
       ${rows||'<div class="empty">Aucune auto-enchère configurée.</div>'}
 
