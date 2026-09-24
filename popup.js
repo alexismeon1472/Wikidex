@@ -1867,7 +1867,7 @@ async function syncMyBidsFromWikiMasters(){
 
   try{
     tempTab=await chrome.tabs.create({
-      url:'https://www.wiki-masters.com/marketplace',
+      url:'https://www.wiki-masters.com/marketplace#wikidex-sync',
       active:false
     });
 
