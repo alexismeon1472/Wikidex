@@ -688,6 +688,11 @@ function listingPrice(a){
   return values.length?values[0]:Infinity;
 }
 
+function normalizeCardKey(value){
+  const raw=String(value||'').trim().toLowerCase().replace(/^api_/,'');
+  const uuid=raw.match(/[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}/i);
+  return uuid ? uuid[0].toLowerCase() : raw;
+}
 
 async function fetchWishlistMarketplaceApi(tabId,wishlistCardIds,userId){
   const result=await chrome.scripting.executeScript({
@@ -1061,6 +1066,32 @@ async function scanWishlistMarketplace(){
       throw new Error('Ta wishlist WikiMasters est vide.');
     }
 
+    const wishedSet=new Set(wished.map(normalizeCardKey).filter(Boolean));
+    let openListingProbe=null;
+
+    const detailTab=tabs.find(t=>/\/marketplace\/[0-9a-f-]{36}(?:[/?#]|$)/i.test(String(t.url||'')));
+    if(detailTab){
+      const idMatch=String(detailTab.url||'').match(/[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}/i);
+      if(idMatch){
+        try{
+          const detail=await runMarketplaceMainGet(detailTab.id,idMatch[0]);
+          const auction=detail?.data?.auction;
+          if(detail?.ok && auction){
+            const marketCardId=normalizeCardKey(auction.card_id || auction.card?.id);
+            openListingProbe={
+              title:auction.card?.wikipedia_title || auction.snapshot_search_document || 'Enchère ouverte',
+              listingId:auction.id || idMatch[0],
+              marketCardId,
+              rawCardId:auction.card_id || auction.card?.id || '',
+              inWishlist:wishedSet.has(marketCardId)
+            };
+          }
+        }catch(e){
+          openListingProbe={error:e.message||String(e)};
+        }
+      }
+    }
+
     const scan=await fetchWishlistMarketplaceApi(
       tabId,
       wished,
@@ -1085,6 +1116,7 @@ async function scanWishlistMarketplace(){
       marketUniqueCards:scan.marketUniqueCards||0,
       wishlistSample:Array.isArray(scan.wishlistSample)?scan.wishlistSample:[],
       marketSample:Array.isArray(scan.marketSample)?scan.marketSample:[],
+      openListingProbe,
       truncated:!!scan.truncated,
       recoveredPages:scan.recoveredPages||0,
       failedSegments:Array.isArray(scan.failedSegments)?scan.failedSegments:[],
@@ -1476,7 +1508,16 @@ async function render(){
                 ${marketScanInfo.skippedAuctionsMax?` · jusqu’à ${marketScanInfo.skippedAuctionsMax} enchère(s) non lisible(s)`:''}
                 ${marketScanInfo.truncated?' · LIMITE DE SCAN ATTEINTE':''}
                 <div class="marketDiag">Wishlist lue : <b>${marketScanInfo.wishlistCount||0}</b> carte(s) · Marché : <b>${marketScanInfo.marketUniqueCards||0}</b> card_id unique(s)</div>
-                ${marketScanInfo.wishlistMatches===0?'<div class="marketDiag warn">Aucune intersection d’identifiants détectée. Les UUID sont maintenant normalisés avant comparaison.</div>':''}
+                ${marketScanInfo.openListingProbe?.marketCardId
+                  ? `<div class="marketProbe ${marketScanInfo.openListingProbe.inWishlist?'ok':'bad'}">
+                      Enchère ouverte : <b>${esc(marketScanInfo.openListingProbe.title)}</b><br>
+                      card_id : <code>${esc(marketScanInfo.openListingProbe.marketCardId)}</code><br>
+                      → ${marketScanInfo.openListingProbe.inWishlist
+                        ? '<b>PRÉSENTE dans les IDs de la wishlist</b>'
+                        : '<b>ABSENTE des IDs de la wishlist</b>'}
+                    </div>`
+                  : ''}
+                ${marketScanInfo.wishlistMatches===0?'<div class="marketDiag warn">Aucune intersection d’identifiants détectée. Les UUID sont normalisés avant comparaison.</div>':''}
               </div>`
             : '<div class="muted">Lance un scan : WikiDex parcourt directement l’API du marché. Aucune page Marché n’a besoin d’être chargée.</div>'}
 
