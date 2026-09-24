@@ -1954,7 +1954,6 @@ async function syncMyBidsFromWikiMasters(){
           mode:'track',
           enabled:!closed,
           max:null,
-          step:1,
           logs:[],
           title:auctionTitle(a),
           currentBid,
