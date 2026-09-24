@@ -682,9 +682,14 @@ async function placeBid(listing,amount,preferredTabId=null){
 }
 
 function listingPrice(a){
-  const values=[a?.effective_bid,a?.current_bid,a?.base_amount,a?.listing_base_amount]
-    .map(Number)
-    .filter(Number.isFinite);
+  const raw=[
+    a?.effectiveBid,a?.effective_bid,
+    a?.currentBid,a?.current_bid,
+    a?.baseAmount,a?.base_amount,
+    a?.listingBaseAmount,a?.listing_base_amount
+  ].filter(v=>v!==null && v!==undefined && v!=='');
+
+  const values=raw.map(Number).filter(Number.isFinite);
   return values.length?values[0]:Infinity;
 }
 
@@ -1946,7 +1951,9 @@ async function render(){
           ? `<div class="importMiss">${esc(marketScanInfo.error||'Erreur de scan')}</div>`
           : marketScanInfo.status==='done'
             ? `<div class="muted" style="margin-bottom:7px">
-                ${marketScanInfo.scannedListings||0} enchère(s) lue(s) sur ${marketScanInfo.pagesRead||0} tranche(s) · ${marketScanInfo.wishlistMatches||0} correspondance(s) · ${marketSuggestions.length} carte(s) unique(s)
+                ${marketScanInfo.targetedTitle || marketScanInfo.targeted
+                  ? `${marketScanInfo.wishlistCount||marketScanInfo.scannedListings||0} carte(s) recherchée(s) · ${marketScanInfo.wishlistMatches||0} enchère(s) trouvée(s) · ${marketSuggestions.length} carte(s) unique(s)`
+                  : `${marketScanInfo.scannedListings||0} enchère(s) lue(s) sur ${marketScanInfo.pagesRead||0} tranche(s) · ${marketScanInfo.wishlistMatches||0} correspondance(s) · ${marketSuggestions.length} carte(s) unique(s)`}
                 ${marketScanInfo.recoveredPages?` · ${marketScanInfo.recoveredPages} page(s) récupérée(s) par découpage`:''}
                 ${marketScanInfo.skippedAuctionsMax?` · jusqu’à ${marketScanInfo.skippedAuctionsMax} enchère(s) non lisible(s)`:''}
                 ${marketScanInfo.truncated?' · LIMITE DE SCAN ATTEINTE':''}
