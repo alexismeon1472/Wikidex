@@ -1590,6 +1590,7 @@ async function scanWishlistMarketplace(){
     $('status').textContent=
       `${marketSuggestions.length} carte(s) de ta wishlist trouvée(s) sur ${scan.scanned||0} enchère(s).`;
 
+    await persistUiState();
     if(tab==='autobid')render();
   }catch(e){
     marketScanInfo={...marketScanInfo,status:'error',error:e.message||String(e)};
@@ -1628,6 +1629,8 @@ async function addSuggestionAutoBid(listingId){
   // Remove suggestion once it has become an auto-bid.
   if(autoBids.some(x=>x.listingId===listingId)){
     marketSuggestions=marketSuggestions.filter(x=>x.listingId!==listingId);
+    delete suggestionDrafts[listingId];
+    await persistUiState();
   }
   render();
 }
@@ -1685,6 +1688,7 @@ async function createAutoBid(){
     if(!existing)autoBids.push(item);
     await saveAutoBids();
     autoDraft={listing:'',max:'',step:String(step||1)};
+    await persistUiState();
     $('status').textContent=`Auto-enchère ${item.enabled?'activée':'créée mais inactive'} : ${item.title}`;
     render();
   }catch(e){
