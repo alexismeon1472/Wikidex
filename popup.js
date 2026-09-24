@@ -4,6 +4,7 @@ const uid=()=>crypto.randomUUID();
 let tab='results', rawResults=[], results=[], selected=new Set(), cols=[], page=0, pageInfo=null, lastDebug=null, openCol=null, currentQuery='';
 
 const AUTOBID_KEY='wikidexAutoBidsV010';
+const WIKIBIDOU_BALANCE_KEY='wikidexWikiBidouBalanceV1';
 let autoBids=[];
 let autoTickRunning=false;
 let autoTimer=null;
@@ -11,6 +12,7 @@ let autoDraft={listing:'',max:'',step:'1'};
 let suggestionDrafts={};
 let marketSuggestions=[];
 let marketScanInfo={status:'',scannedListings:0,wishlistMatches:0,sourceUrl:'',startedAt:0,progress:null};
+let wikibidouBalance={amount:null,status:'idle',updatedAt:0,error:''};
 
 
 const UI_STATE_KEY='wikidexUiStateV077';
@@ -99,6 +101,194 @@ async function restoreUiState(){
 async function wikiTab(){
   const tabs=await chrome.tabs.query({url:['https://www.wiki-masters.com/*','https://wiki-masters.com/*']});
   return tabs.find(t=>t.active)||tabs[0]||null;
+}
+
+function formatWikiBidous(value){
+  const n=Number(value);
+  if(!Number.isFinite(n))return '—';
+  return new Intl.NumberFormat('fr-FR',{maximumFractionDigits:2}).format(n);
+}
+
+async function restoreWikiBidouBalance(){
+  const obj=await chrome.storage.local.get(WIKIBIDOU_BALANCE_KEY).catch(()=>({}));
+  const state=obj?.[WIKIBIDOU_BALANCE_KEY];
+  if(!state||!Number.isFinite(Number(state.amount)))return;
+  wikibidouBalance={
+    amount:Number(state.amount),
+    status:'cached',
+    updatedAt:Number(state.updatedAt)||0,
+    error:''
+  };
+}
+
+function updateWikiBidouBalanceDom(){
+  const amountEl=$('wikibidouAmount');
+  const metaEl=$('wikibidouMeta');
+  const btn=$('refreshWikiBidous');
+  if(!amountEl)return;
+
+  amountEl.textContent=wikibidouBalance.status==='loading' && wikibidouBalance.amount==null
+    ? '…'
+    : formatWikiBidous(wikibidouBalance.amount);
+
+  if(metaEl){
+    if(wikibidouBalance.status==='loading'){
+      metaEl.textContent='Actualisation…';
+    }else if(wikibidouBalance.error){
+      metaEl.textContent='Dernier solde connu' + (wikibidouBalance.updatedAt
+        ? ' · '+new Date(wikibidouBalance.updatedAt).toLocaleTimeString('fr-FR')
+        : '');
+    }else if(wikibidouBalance.updatedAt){
+      metaEl.textContent='Mis à jour à '+new Date(wikibidouBalance.updatedAt).toLocaleTimeString('fr-FR');
+    }else{
+      metaEl.textContent='Solde WikiMasters';
+    }
+  }
+
+  if(btn)btn.disabled=wikibidouBalance.status==='loading';
+}
+
+async function refreshWikiBidouBalance({silent=false}={}){
+  const previousAmount=wikibidouBalance.amount;
+  wikibidouBalance={...wikibidouBalance,status:'loading',error:''};
+  updateWikiBidouBalanceDom();
+
+  try{
+    const tabs=await marketplaceTabs('');
+    if(!tabs.length)throw new Error('Ouvre WikiMasters dans un onglet.');
+
+    let found=null;
+
+    for(const t of tabs){
+      try{
+        const out=await chrome.scripting.executeScript({
+          target:{tabId:t.id},
+          func:()=>{
+            const visible=el=>{
+              if(!(el instanceof Element))return false;
+              const r=el.getBoundingClientRect();
+              const st=getComputedStyle(el);
+              return r.width>0&&r.height>0&&st.display!=='none'&&st.visibility!=='hidden';
+            };
+
+            const parseNumber=raw=>{
+              let x=String(raw||'').replace(/[\s\u00A0\u202F]/g,'').trim();
+              if(!x)return null;
+
+              const punct=[...x].filter(ch=>ch===','||ch==='.').length;
+              if(punct){
+                const lastComma=x.lastIndexOf(',');
+                const lastDot=x.lastIndexOf('.');
+                const last=Math.max(lastComma,lastDot);
+                const decimals=x.length-last-1;
+
+                if(decimals===1||decimals===2){
+                  const intPart=x.slice(0,last).replace(/[.,]/g,'');
+                  const decPart=x.slice(last+1).replace(/[.,]/g,'');
+                  x=intPart+'.'+decPart;
+                }else{
+                  x=x.replace(/[.,]/g,'');
+                }
+              }
+
+              const n=Number(x);
+              return Number.isFinite(n)?n:null;
+            };
+
+            const extract=text=>{
+              const src=String(text||'').replace(/\s+/g,' ').trim();
+              if(!/wikibidou/i.test(src))return null;
+
+              const before=src.match(/([0-9][0-9\s\u00A0\u202F.,]{0,24})\s*wikibidous?/i);
+              if(before){
+                const n=parseNumber(before[1]);
+                if(n!==null)return n;
+              }
+
+              const after=src.match(/wikibidous?[^0-9]{0,24}([0-9][0-9\s\u00A0\u202F.,]{0,24})/i);
+              if(after){
+                const n=parseNumber(after[1]);
+                if(n!==null)return n;
+              }
+
+              return null;
+            };
+
+            const candidates=[];
+            const nodes=[...document.querySelectorAll('header,nav,button,a,div,span,[aria-label],[title]')];
+
+            for(const el of nodes){
+              if(!visible(el))continue;
+
+              const own=[
+                el.innerText||'',
+                el.getAttribute?.('aria-label')||'',
+                el.getAttribute?.('title')||''
+              ].join(' ').trim();
+
+              if(!/wikibidou/i.test(own))continue;
+
+              const variants=[el,el.parentElement,el.parentElement?.parentElement].filter(Boolean);
+              for(let depth=0;depth<variants.length;depth++){
+                const node=variants[depth];
+                const txt=[
+                  node.innerText||'',
+                  node.getAttribute?.('aria-label')||'',
+                  node.getAttribute?.('title')||''
+                ].join(' ');
+
+                const amount=extract(txt);
+                if(amount===null)continue;
+
+                const r=node.getBoundingClientRect();
+                let score=100-depth*10;
+                if(node.closest('header,nav'))score+=50;
+                if(r.top>=0&&r.top<180)score+=25;
+                if(txt.length<120)score+=20;
+
+                candidates.push({amount,score,text:txt.slice(0,160)});
+              }
+            }
+
+            candidates.sort((a,b)=>b.score-a.score);
+            return candidates[0]||null;
+          }
+        });
+
+        const candidate=out?.[0]?.result||null;
+        if(candidate&&Number.isFinite(Number(candidate.amount))){
+          found={...candidate,tabId:t.id};
+          break;
+        }
+      }catch{}
+    }
+
+    if(!found)throw new Error('Solde Wikibidous introuvable sur la page WikiMasters.');
+
+    wikibidouBalance={
+      amount:Number(found.amount),
+      status:'ok',
+      updatedAt:Date.now(),
+      error:''
+    };
+
+    await chrome.storage.local.set({
+      [WIKIBIDOU_BALANCE_KEY]:{
+        amount:wikibidouBalance.amount,
+        updatedAt:wikibidouBalance.updatedAt
+      }
+    }).catch(()=>{});
+  }catch(e){
+    wikibidouBalance={
+      amount:previousAmount,
+      status:'error',
+      updatedAt:wikibidouBalance.updatedAt||0,
+      error:e.message||String(e)
+    };
+    if(!silent)$('status').textContent='Wikibidous : '+wikibidouBalance.error;
+  }
+
+  updateWikiBidouBalanceDom();
 }
 
 async function marketplaceTabs(listingId=''){
@@ -1957,6 +2147,15 @@ async function render(){
     }).join('');
 
     $('body').innerHTML=`
+      <div class="wikiWallet">
+        <div>
+          <div class="wikiWalletLabel">Solde disponible</div>
+          <div class="wikiWalletAmount"><span id="wikibidouAmount">${formatWikiBidous(wikibidouBalance.amount)}</span> Wikibidous</div>
+          <div id="wikibidouMeta" class="wikiWalletMeta">${wikibidouBalance.updatedAt?'Mis à jour à '+esc(new Date(wikibidouBalance.updatedAt).toLocaleTimeString('fr-FR')):'Solde WikiMasters'}</div>
+        </div>
+        <button id="refreshWikiBidous">Actualiser</button>
+      </div>
+
       <div class="autoForm">
         <input id="autoListing" class="wide" placeholder="URL ou ID de l’enchère" value="${esc(autoDraft.listing||'')}">
         <input id="autoMax" type="number" min="0.01" step="0.01" placeholder="Plafond" value="${esc(autoDraft.max||'')}">
@@ -2041,6 +2240,8 @@ async function render(){
     `;
 
     $('autoAdd').onclick=createAutoBid;
+    $('refreshWikiBidous').onclick=()=>refreshWikiBidouBalance();
+    updateWikiBidouBalanceDom();
     $('scanMarket').onclick=scanWishlistMarketplace;
     document.querySelectorAll('[data-suggest-add]').forEach(b=>b.onclick=()=>addSuggestionAutoBid(b.dataset.suggestAdd));
 
@@ -2266,7 +2467,17 @@ function showDebug(){
 $('go').onclick=()=>search(true);
 $('q').onkeydown=e=>{if(e.key==='Enter')search(true)};
 $('q').oninput=()=>{clearTimeout(window._wdPersistQ);window._wdPersistQ=setTimeout(persistUiState,200)};
-document.querySelectorAll('.tab').forEach(b=>b.onclick=async()=>{tab=b.dataset.tab;openCol=null;await persistUiState();render()});
+document.querySelectorAll('.tab').forEach(b=>b.onclick=async()=>{
+  tab=b.dataset.tab;
+  openCol=null;
+  await persistUiState();
+  await render();
+
+  if(tab==='autobid'){
+    const stale=!wikibidouBalance.updatedAt || Date.now()-wikibidouBalance.updatedAt>60000;
+    if(stale)refreshWikiBidouBalance({silent:true});
+  }
+});
 $('closeDlg').onclick=()=>$('addDlg').close();
 
 $('loadFrancePreset').onclick=()=>{
@@ -2318,8 +2529,10 @@ chrome.runtime.onMessage.addListener(m=>{
 });
 (async()=>{
   await loadAutoBids();
+  await restoreWikiBidouBalance();
   ensureAutoTimer();
   await restoreUiState();
   await render();
+  if(tab==='autobid')refreshWikiBidouBalance({silent:true});
   tickAutoBids();
 })();
