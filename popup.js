@@ -1619,12 +1619,11 @@ async function addSuggestionAutoBid(listingId){
     return;
   }
 
-  autoDraft={
+  await createAutoBid({
     listing:`https://www.wiki-masters.com/marketplace/${listingId}`,
     max:String(max),
     step:String(step)
-  };
-  await createAutoBid();
+  });
 
   // Remove suggestion once it has become an auto-bid.
   if(autoBids.some(x=>x.listingId===listingId)){
@@ -1635,12 +1634,26 @@ async function addSuggestionAutoBid(listingId){
   render();
 }
 
-async function createAutoBid(){
-  autoDraft={
-    listing:$('autoListing')?.value||'',
-    max:$('autoMax')?.value||'',
-    step:$('autoStep')?.value||'1'
-  };
+async function createAutoBid(input=null){
+  const hasExplicitInput=
+    input &&
+    typeof input==='object' &&
+    typeof input.listing==='string';
+
+  if(hasExplicitInput){
+    autoDraft={
+      listing:input.listing||'',
+      max:String(input.max??''),
+      step:String(input.step??'1')
+    };
+  }else{
+    autoDraft={
+      listing:$('autoListing')?.value||'',
+      max:$('autoMax')?.value||'',
+      step:$('autoStep')?.value||'1'
+    };
+  }
+
   const listing=autoDraft.listing.trim();
   const max=Number(autoDraft.max);
   const step=Number(autoDraft.step||1);
