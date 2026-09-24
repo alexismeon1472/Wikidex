@@ -9,7 +9,7 @@ let autoTickRunning=false;
 let autoTimer=null;
 let autoDraft={listing:'',max:'',step:'1'};
 let marketSuggestions=[];
-let marketScanInfo={status:'',scannedListings:0,wishlistMatches:0,sourceUrl:''};
+let marketScanInfo={status:'',scannedListings:0,wishlistMatches:0,sourceUrl:'',startedAt:0,progress:null};
 
 
 const UI_STATE_KEY='wikidexUiStateV077';
@@ -700,6 +700,16 @@ async function fetchWishlistMarketplaceApi(tabId,wishlistCardIds,userId){
       const seenListings=new Set();
       const failedSegments=[];
 
+      const emit=detail=>{
+        try{
+          window.postMessage({
+            source:'wikidex',
+            type:'WD_MARKET_SCAN_PROGRESS',
+            detail:{...detail,at:Date.now()}
+          },'*');
+        }catch{}
+      };
+
       const MAIN_LIMIT=50;
       const MAX_MAIN_PAGES=250;
 
@@ -739,7 +749,18 @@ async function fetchWishlistMarketplaceApi(tabId,wishlistCardIds,userId){
         const retryDelays=[0,500,1400,3000];
         let last=null;
 
-        for(const delay of retryDelays){
+        for(let attempt=0;attempt<retryDelays.length;attempt++){
+          const delay=retryDelays[attempt];
+
+          emit({
+            phase:attempt===0?'request':'retry',
+            page,
+            limit,
+            attempt:attempt+1,
+            attempts:retryDelays.length,
+            status:last?.status||null
+          });
+
           if(delay)await new Promise(r=>setTimeout(r,delay));
 
           try{
@@ -811,6 +832,14 @@ async function fetchWishlistMarketplaceApi(tabId,wishlistCardIds,userId){
         else if(size===25)childSize=5;
 
         if(childSize){
+          emit({
+            phase:'split',
+            offset,
+            size,
+            childSize,
+            page:(offset/size)+1
+          });
+
           const parts=[];
           let aggregateHasMore=true;
 
@@ -837,6 +866,14 @@ async function fetchWishlistMarketplaceApi(tabId,wishlistCardIds,userId){
           error:(r?.text||'Erreur inconnue').slice(0,160)
         });
 
+        emit({
+          phase:'skip',
+          offset,
+          size,
+          status:r?.status||0,
+          failedSegments:failedSegments.length
+        });
+
         return {
           ok:true,
           rows:[],
@@ -861,6 +898,16 @@ async function fetchWishlistMarketplaceApi(tabId,wishlistCardIds,userId){
         scanned+=rows.length;
         for(const a of rows)keepAuction(a);
 
+        emit({
+          phase:'progress',
+          block:mainIndex+1,
+          pagesRead,
+          scanned,
+          matches:matches.length,
+          recoveredPages,
+          failedSegments:failedSegments.length
+        });
+
         // If the complete 50-auction range was successfully read and the API
         // says there is no next range, the market scan is complete.
         if(segment.hasMore===false){
@@ -878,6 +925,16 @@ async function fetchWishlistMarketplaceApi(tabId,wishlistCardIds,userId){
         offset+=MAIN_LIMIT;
         await new Promise(r=>setTimeout(r,50));
       }
+
+      emit({
+        phase:'done',
+        pagesRead,
+        scanned,
+        matches:matches.length,
+        recoveredPages,
+        failedSegments:failedSegments.length,
+        finished
+      });
 
       return {
         ok:true,
@@ -933,8 +990,42 @@ function chooseOneListingPerCard(rows,userId){
   });
 }
 
+function marketProgressText(info=marketScanInfo){
+  const elapsed=info.startedAt?Math.max(0,Math.round((Date.now()-info.startedAt)/1000)):0;
+  const p=info.progress||{};
+
+  if(p.phase==='retry'){
+    return `Page ${p.page} × ${p.limit} — retry ${p.attempt}/${p.attempts}${p.status?` · HTTP ${p.status}`:''}`;
+  }
+  if(p.phase==='split'){
+    return `Page ${p.page} en erreur — découpage ${p.size} → ${p.childSize}`;
+  }
+  if(p.phase==='skip'){
+    return `Segment de ${p.size} enchère(s) illisible — scan poursuivi`;
+  }
+  if(p.phase==='request'){
+    return `Lecture page ${p.page} × ${p.limit}… · ${elapsed}s`;
+  }
+
+  const block=p.block||info.pagesRead||0;
+  const scanned=p.scanned??info.scannedListings??0;
+  const matches=p.matches??info.wishlistMatches??0;
+  return `Bloc ${block} · ${scanned} enchère(s) lue(s) · ${matches} correspondance(s) · ${elapsed}s`;
+}
+
+function updateMarketProgressDom(){
+  if(marketScanInfo.status!=='scan')return;
+  const textEl=$('marketProgressText');
+  const metaEl=$('marketProgressMeta');
+  if(textEl)textEl.textContent=marketProgressText();
+  if(metaEl){
+    const p=marketScanInfo.progress||{};
+    metaEl.textContent=`Tranches : ${p.pagesRead||marketScanInfo.pagesRead||0} · récupérées par découpage : ${p.recoveredPages||0} · segments ignorés : ${p.failedSegments||0}`;
+  }
+}
+
 async function scanWishlistMarketplace(){
-  marketScanInfo={status:'scan',scannedListings:0,wishlistMatches:0,sourceUrl:''};
+  marketScanInfo={status:'scan',scannedListings:0,wishlistMatches:0,sourceUrl:'',startedAt:Date.now(),progress:{phase:'start'}};
   marketSuggestions=[];
   if(tab==='autobid')render();
 
@@ -1354,7 +1445,11 @@ async function render(){
         <button id="scanMarket" class="primary">Scanner le marché</button>
       </div>
       ${marketScanInfo.status==='scan'
-        ? '<div class="muted">Pagination de l’API du marché et comparaison avec ta wishlist…</div>'
+        ? `<div class="marketProgress">
+            <div id="marketProgressText" class="marketProgressText">${esc(marketProgressText())}</div>
+            <div class="marketProgressTrack"><div class="marketProgressBar"></div></div>
+            <div id="marketProgressMeta" class="marketProgressMeta">Le total n’est pas fourni par l’API : progression par blocs lus.</div>
+          </div>`
         : marketScanInfo.status==='error'
           ? `<div class="importMiss">${esc(marketScanInfo.error||'Erreur de scan')}</div>`
           : marketScanInfo.status==='done'
@@ -1624,6 +1719,15 @@ $('openSide').onclick=async()=>{
 };
 bindRarityFilters();
 chrome.runtime.onMessage.addListener(m=>{
+  if(m.type==='WD_MARKET_SCAN_PROGRESS' && marketScanInfo.status==='scan'){
+    const p=m.detail||{};
+    marketScanInfo.progress=p;
+    if(Number.isFinite(p.scanned))marketScanInfo.scannedListings=p.scanned;
+    if(Number.isFinite(p.matches))marketScanInfo.wishlistMatches=p.matches;
+    if(Number.isFinite(p.pagesRead))marketScanInfo.pagesRead=p.pagesRead;
+    updateMarketProgressDom();
+  }
+
   if(m.type==='WD_API_EXPORT_PROGRESS'){
     $('status').textContent=
       `Export API · +${m.added||0} · déjà ${m.already||0} · échecs ${m.failed||0} / ${m.total||0}`;
