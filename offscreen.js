@@ -1,13 +1,12 @@
-const WD_HEARTBEAT_MS=2500;
+const worker=new Worker(chrome.runtime.getURL('offscreen-worker.js'));
 
-async function heartbeat(){
+worker.onmessage=async event=>{
+  if(event.data?.type!=='heartbeat')return;
+
   try{
     await chrome.runtime.sendMessage({
       type:'AUTOBID_HEARTBEAT',
-      at:Date.now()
+      at:event.data.at||Date.now()
     });
   }catch{}
-}
-
-heartbeat();
-setInterval(heartbeat,WD_HEARTBEAT_MS);
+};
