@@ -62,11 +62,17 @@ dialog{width:430px;background:#171b22;color:#fff;border:1px solid #343c49;border
 .marketSuggestionForm input{width:100%}
 .marketSuggestionNote{font-size:10px;color:#8893a2;margin-top:4px}
 .marketBadge{font-size:9px;font-weight:800;background:#303849;border-radius:999px;padding:3px 6px;white-space:nowrap}
+.marketProgress{background:#141920;border:1px solid #29313c;border-radius:8px;padding:9px;margin-bottom:8px}
+.marketProgressText{font-size:11px;font-weight:750;color:#d7dee8}
+.marketProgressMeta{font-size:9.5px;color:#8f99a8;margin-top:6px}
+.marketProgressTrack{height:6px;background:#242a34;border-radius:999px;overflow:hidden;margin-top:7px}
+.marketProgressBar{height:100%;width:38%;background:#6857ff;border-radius:999px;animation:marketScanPulse 1.15s ease-in-out infinite alternate}
+@keyframes marketScanPulse{from{transform:translateX(-15%)}to{transform:translateX(180%)}}
 
 </style></head><body>
 <header>
 <div class="row" style="margin-bottom:8px">
-<h1 style="margin:0;flex:1">WikiDex v0.11.2</h1>
+<h1 style="margin:0;flex:1">WikiDex v0.11.3</h1>
 <button id="openSide">⇱ Panneau latéral</button>
 </div>
 <div class="row">
