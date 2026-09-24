@@ -1,44 +1,20 @@
-# WikiDex v0.11.2
+# WikiDex v0.11.3
 
-## Correctif des erreurs HTTP 500 pendant le scan du marché
+## Progression en direct du scan du marché
 
-Une erreur serveur sur une page profonde du marché ne stoppe plus tout le scan.
+Le scanner affiche maintenant son avancement pendant la pagination de l’API marketplace.
 
-### Retry
+Comme l’API fournit `hasMore` mais pas le nombre total de pages, WikiDex n’affiche pas un faux pourcentage.
+Il affiche à la place des informations réelles :
 
-Pour chaque requête marketplace, WikiDex retente les erreurs temporaires :
+- bloc / page en cours ;
+- nombre d’enchères déjà lues ;
+- nombre de correspondances avec la wishlist ;
+- temps écoulé ;
+- retry HTTP en cours ;
+- découpage automatique 50 → 25 → 5 en cas d’erreur serveur ;
+- nombre de segments éventuellement ignorés.
 
-- HTTP 429
-- HTTP 500
-- HTTP 502
-- HTTP 503
-- HTTP 504
-- erreurs réseau
+Une barre animée indique que le scan est toujours actif.
 
-Délais : environ 0,5 s, 1,4 s puis 3 s.
-
-### Découpage automatique
-
-Le scanner travaille normalement par blocs de 50 enchères.
-
-Si un bloc de 50 continue de répondre en erreur après les retries, WikiDex
-couvre exactement la même zone en deux blocs de 25.
-
-Si un bloc de 25 échoue encore, il est découpé en cinq blocs de 5.
-
-Ainsi, par exemple, un échec de `page=57&limit=50` n'oblige plus à abandonner
-les milliers d'enchères déjà parcourues.
-
-### Dernier recours
-
-Si même un bloc de 5 reste illisible, WikiDex le note comme segment manquant
-et continue le scan au lieu de tout annuler.
-
-L'interface indique alors le nombre maximal d'enchères qui n'ont pas pu être lues.
-
-### Sécurité
-
-Le scan reste limité à l'équivalent de 250 blocs de 50.
-
-La logique d'auto-enchère n'est pas modifiée.
-Aucun POST `/bid` n'est retenté automatiquement.
+La logique de scan robuste de la v0.11.2 reste inchangée.
