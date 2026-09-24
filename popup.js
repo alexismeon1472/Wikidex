@@ -2063,6 +2063,7 @@ async function createAutoBid(input=null){
       logs:[]
     };
 
+    item.mode='autobid';
     item.max=roundMoney(max);
     item.step=roundMoney(step);
     item.enabled=!auctionClosed(a);
@@ -2282,6 +2283,13 @@ function autoState(item){
     return {cls:'stop',txt:'LECTURE HS'};
   }
 
+  if(item.mode==='track'){
+    if(item.userId && item.currentBidderId===item.userId){
+      return {cls:'on',txt:'SUIVI · EN TÊTE'};
+    }
+    return {cls:'wait',txt:'SUIVI'};
+  }
+
   if(item.userId && item.currentBidderId===item.userId){
     return {cls:'on',txt:'EN TÊTE'};
   }
@@ -2369,13 +2377,14 @@ async function render(){
           <span class="autoState ${st.cls}">${st.txt}</span>
         </div>
         <div class="autoMeta">
-          Actuelle : <b>${money(item.currentBid)}</b> · Plafond : <b>${money(item.max)}</b> · Pas : ${money(item.step)}<br>
+          Actuelle : <b>${money(item.currentBid)}</b> · Plafond : <b>${item.mode==='track'?'— (suivi seul)':money(item.max)}</b> · Pas : ${item.mode==='track'?'—':money(item.step)}<br>
           Statut serveur : ${esc(item.status||'—')} · Fin : ${esc(end)}<br>
           ${item.lastSuccessAt?`Dernière lecture valide : ${esc(new Date(item.lastSuccessAt).toLocaleTimeString('fr-FR'))}<br>`:''}
           ${esc(item.lastAction||'En attente')}
         </div>
         <div class="autoBtns">
-          <button data-auto-toggle="${item.id}">${item.enabled?'Pause':'Activer'}</button>
+          <button data-auto-toggle="${item.id}">${item.enabled?(item.mode==='track'?'Pause suivi':'Pause'):(item.mode==='track'?'Reprendre suivi':'Activer')}</button>
+          ${item.mode==='track'?`<button class="primary" data-auto-configure="${item.id}">Configurer AutoBid</button>`:''}
           <button data-auto-refresh="${item.id}">Actualiser</button>
           <button class="danger" data-auto-delete="${item.id}">Supprimer</button>
         </div>
