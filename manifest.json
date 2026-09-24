@@ -1,7 +1,7 @@
 {
   "manifest_version": 3,
   "name": "WikiDex for WikiMasters",
-  "version": "0.11.2",
+  "version": "0.11.3",
   "description": "Recherche API WikiMasters, multi-sélection, collections locales et export vers la wishlist.",
   "permissions": [
     "cookies",
