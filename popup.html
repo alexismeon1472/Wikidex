@@ -48,6 +48,18 @@ dialog{width:430px;background:#171b22;color:#fff;border:1px solid #343c49;border
 .wikiWallet button{padding:6px 9px;font-size:10px}
 .autoEngineStatus{margin-bottom:9px;padding:8px 9px;border:1px solid #29313c;border-radius:8px;background:#11161d;color:#9da8b7;font-size:10px;line-height:1.45}
 .autoEngineStatus b{color:#d7dee8}
+.autoSyncBar{display:flex;align-items:center;gap:7px;margin:0 0 8px}
+.autoSyncBar span{font-size:9.5px;color:#7f8997}
+#syncMyBids{padding:4px 7px;font-size:9.5px;border-radius:6px;white-space:nowrap}
+.autoListHead{display:flex;align-items:center;gap:8px;flex-wrap:wrap;margin:9px 0 7px}
+.autoListHead>b{font-size:11px;white-space:nowrap}
+.autoSortBar{display:flex;gap:4px;flex-wrap:wrap;flex:1}
+.autoSortBtn{padding:3px 6px;font-size:9px;border:1px solid #303846;background:#171b22;color:#8f99a8;border-radius:999px}
+.autoSortBtn:hover{color:#d7dee8;border-color:#465163}
+.autoSortBtn.active{background:#364155;color:#fff;border-color:#66758a}
+.autoGroupTitle{display:flex;align-items:center;gap:6px;margin:10px 1px 5px;color:#cbd4df;font-size:10px;font-weight:850;text-transform:uppercase;letter-spacing:.04em}
+.autoGroupTitle:after{content:"";height:1px;background:#29313c;flex:1}
+.autoGroupTitle span{order:2;background:#242a34;color:#8f99a8;border-radius:999px;padding:1px 5px;font-size:9px}
 .auctionLink{color:inherit;text-decoration:none}
 .auctionLink:hover{text-decoration:underline;text-underline-offset:2px}
 .autoForm{display:grid;grid-template-columns:1fr 110px auto;gap:6px;align-items:center;margin-bottom:10px}
@@ -67,7 +79,7 @@ dialog{width:430px;background:#171b22;color:#fff;border:1px solid #343c49;border
 .marketSuggestionTop{display:flex;gap:7px;align-items:flex-start}
 .marketSuggestionTitle{font-weight:800;flex:1}
 .marketSuggestionMeta{font-size:10.5px;color:#aab4c1;line-height:1.4;margin-top:4px}
-.marketSuggestionForm{display:grid;grid-template-columns:90px 75px 1fr;gap:5px;margin-top:7px}
+.marketSuggestionForm{display:grid;grid-template-columns:110px 1fr;gap:5px;margin-top:7px}
 .marketSuggestionForm input{width:100%}
 .marketSuggestionNote{font-size:10px;color:#8893a2;margin-top:4px}
 .marketBadge{font-size:9px;font-weight:800;background:#303849;border-radius:999px;padding:3px 6px;white-space:nowrap}
@@ -87,7 +99,7 @@ dialog{width:430px;background:#171b22;color:#fff;border:1px solid #343c49;border
 </style></head><body>
 <header>
 <div class="row" style="margin-bottom:8px">
-<h1 style="margin:0;flex:1">WikiDex v0.12.3</h1>
+<h1 style="margin:0;flex:1">WikiDex v0.12.4</h1>
 <button id="openSide">⇱ Panneau latéral</button>
 </div>
 <div class="row">
