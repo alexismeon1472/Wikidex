@@ -2445,11 +2445,20 @@ async function render(){
       ? Math.max(0,Math.round((Date.now()-autoEngineStatus.lastTickAt)/1000))
       : null;
 
-    const rows=autoBids.map(item=>{
+    const sortedAutoBids=[...autoBids].sort(compareAutoBids);
+    let lastPriorityGroup='';
+    const rows=sortedAutoBids.map(item=>{
       const st=autoState(item);
       const end=item.endAt ? new Date(item.endAt).toLocaleString('fr-FR') : '—';
       const logs=(item.logs||[]).map(esc).join('\n');
-      return `<div class="autoRow">
+      const group=autoSort==='priority'?autoPriorityGroup(item):null;
+      const groupHead=
+        group && group.key!==lastPriorityGroup
+          ? `<div class="autoGroupTitle">${esc(group.label)}<span>${sortedAutoBids.filter(x=>autoPriorityGroup(x).key===group.key).length}</span></div>`
+          : '';
+      if(group)lastPriorityGroup=group.key;
+
+      return groupHead+`<div class="autoRow">
         <div class="autoTop">
           <div class="autoTitle"><a class="auctionLink" href="https://www.wiki-masters.com/marketplace/${encodeURIComponent(item.listingId)}" target="_blank" rel="noopener noreferrer">${esc(item.title||item.listingId)}</a></div>
           <span class="autoState ${st.cls}">${st.txt}</span>
@@ -2493,9 +2502,22 @@ async function render(){
         Notifications : perte de tête · enchère gagnée · plafond atteint · solde ≤ 100 Wikibidous.
       </div>
 
-      <div class="toolbar">
-        <button id="syncMyBids" class="primary">↻ Synchroniser mes enchères WikiMasters</button>
-        <span class="muted">Les nouvelles sont importées en suivi, sans surenchère automatique.</span>
+      <div class="autoSyncBar">
+        <button id="syncMyBids" class="primary">↻ Synchroniser</button>
+        <span>Mes enchères WikiMasters · import en suivi uniquement</span>
+      </div>
+
+      <div class="autoListHead">
+        <b>Mes enchères (${autoBids.length})</b>
+        <div class="autoSortBar">
+          <button class="autoSortBtn ${autoSort==='priority'?'active':''}" data-auto-sort="priority">Priorité</button>
+          <button class="autoSortBtn ${autoSort==='end'?'active':''}" data-auto-sort="end">Fin bientôt</button>
+          <button class="autoSortBtn ${autoSort==='priceAsc'?'active':''}" data-auto-sort="priceAsc">Prix ↑</button>
+          <button class="autoSortBtn ${autoSort==='priceDesc'?'active':''}" data-auto-sort="priceDesc">Prix ↓</button>
+          <button class="autoSortBtn ${autoSort==='maxAsc'?'active':''}" data-auto-sort="maxAsc">Plafond ↑</button>
+          <button class="autoSortBtn ${autoSort==='track'?'active':''}" data-auto-sort="track">Suivi d’abord</button>
+          <button class="autoSortBtn ${autoSort==='autobid'?'active':''}" data-auto-sort="autobid">AutoBid d’abord</button>
+        </div>
       </div>
 
       ${rows||'<div class="empty">Aucune auto-enchère configurée.</div>'}
@@ -2572,6 +2594,13 @@ async function render(){
 
     $('autoAdd').onclick=createAutoBid;
     $('syncMyBids').onclick=syncMyBidsFromWikiMasters;
+    document.querySelectorAll('[data-auto-sort]').forEach(b=>{
+      b.onclick=async()=>{
+        autoSort=b.dataset.autoSort||'priority';
+        await persistUiState();
+        render();
+      };
+    });
     $('refreshWikiBidous').onclick=()=>refreshWikiBidouBalance();
     updateWikiBidouBalanceDom();
     $('scanMarket').onclick=scanWishlistMarketplace;
