@@ -1,20 +1,15 @@
-# WikiDex v0.11.3
+# WikiDex v0.11.7
 
-## Progression en direct du scan du marché
+## Recherche ciblée des enchères par titre
 
-Le scanner affiche maintenant son avancement pendant la pagination de l’API marketplace.
+Le flux global `/api/marketplace` ne contient pas toujours toutes les enchères actives.
 
-Comme l’API fournit `hasMore` mais pas le nombre total de pages, WikiDex n’affiche pas un faux pourcentage.
-Il affiche à la place des informations réelles :
+WikiDex essaie maintenant automatiquement :
 
-- bloc / page en cours ;
-- nombre d’enchères déjà lues ;
-- nombre de correspondances avec la wishlist ;
-- temps écoulé ;
-- retry HTTP en cours ;
-- découpage automatique 50 → 25 → 5 en cas d’erreur serveur ;
-- nombre de segments éventuellement ignorés.
+1. un filtre direct par `card_id` ;
+2. si non supporté, une recherche texte du marché (`q`, `search` ou `query`) validée avec l'enchère actuellement ouverte ;
+3. si un filtre texte est confirmé, chaque carte de la wishlist est recherchée par son titre puis vérifiée par UUID.
 
-Une barre animée indique que le scan est toujours actif.
+Les titres des cartes de la wishlist sont récupérés depuis Supabase `cards` par lots.
 
-La logique de scan robuste de la v0.11.2 reste inchangée.
+Le mode global paginé reste le fallback si aucun filtre ciblé n'est confirmé.
