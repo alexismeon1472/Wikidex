@@ -5,11 +5,11 @@ let tab='results', rawResults=[], results=[], selected=new Set(), cols=[], page=
 
 const AUTOBID_KEY='wikidexAutoBidsV010';
 const WIKIBIDOU_BALANCE_KEY='wikidexWikiBidouBalanceV1';
-const AUTOBID_INCREMENT_PCT=11;
+const AUTOBID_INCREMENT_PCT=10;
 let autoBids=[];
 let autoTickRunning=false;
 let autoTimer=null;
-let autoDraft={listing:'',max:'',step:'1'};
+let autoDraft={listing:'',max:''};
 let suggestionDrafts={};
 let marketSuggestions=[];
 let marketScanInfo={status:'',scannedListings:0,wishlistMatches:0,sourceUrl:'',startedAt:0,progress:null};
@@ -2172,7 +2172,7 @@ async function processAutoBid(item){
   if(next>Number(item.max)+1e-9){
     item.enabled=false;
     item.lastAction=`Plafond atteint (${money(item.max)})`;
-    addAutoLog(item,`Pas de surenchère : +11 % ⇒ ${money(next)} > plafond ${money(item.max)}`);
+    addAutoLog(item,`Pas de surenchère : +10 % ⇒ ${money(next)} > plafond ${money(item.max)}`);
     return;
   }
 
@@ -2373,7 +2373,7 @@ async function render(){
           <span class="autoState ${st.cls}">${st.txt}</span>
         </div>
         <div class="autoMeta">
-          Actuelle : <b>${money(item.currentBid)}</b> · Plafond : <b>${item.mode==='track'?'— (suivi seul)':money(item.max)}</b> · Pas : ${item.mode==='track'?'—':money(item.step)}<br>
+          Actuelle : <b>${money(item.currentBid)}</b> · Plafond : <b>${item.mode==='track'?'— (suivi seul)':money(item.max)}</b> · Majoration : <b>${item.mode==='track'?'—':'+10 % arrondi au-dessus'}</b><br>
           Statut serveur : ${esc(item.status||'—')} · Fin : ${esc(end)}<br>
           ${item.lastSuccessAt?`Dernière lecture valide : ${esc(new Date(item.lastSuccessAt).toLocaleTimeString('fr-FR'))}<br>`:''}
           ${esc(item.lastAction||'En attente')}
@@ -2401,7 +2401,6 @@ async function render(){
       <div class="autoForm">
         <input id="autoListing" class="wide" placeholder="URL ou ID de l’enchère" value="${esc(autoDraft.listing||'')}">
         <input id="autoMax" type="number" min="0.01" step="0.01" placeholder="Plafond" value="${esc(autoDraft.max||'')}">
-        <input id="autoStep" type="number" min="0.01" step="0.01" value="${esc(autoDraft.step||'1')}" placeholder="Pas">
         <button id="autoAdd" class="primary">Ajouter</button>
       </div>
       <div class="autoEngineStatus">
@@ -2483,7 +2482,6 @@ async function render(){
             ? '<div class="marketSuggestionNote">Déjà présente dans tes auto-enchères.</div>'
             : `<div class="marketSuggestionForm">
                 <input data-suggest-max="${s.listingId}" type="number" min="0.01" step="0.01" placeholder="Plafond" value="${esc(suggestionDrafts[s.listingId]?.max||'')}">
-                <input data-suggest-step="${s.listingId}" type="number" min="0.01" step="0.01" value="${esc(suggestionDrafts[s.listingId]?.step||'1')}" placeholder="Pas">
                 <button class="green" data-suggest-add="${s.listingId}">Créer auto-enchère</button>
               </div>`}
         </div>`;
@@ -2505,24 +2503,19 @@ async function render(){
     const rememberAutoDraft=()=>{
       autoDraft={
         listing:$('autoListing')?.value||'',
-        max:$('autoMax')?.value||'',
-        step:$('autoStep')?.value||'1'
+        max:$('autoMax')?.value||''
       };
       scheduleLocalSave();
     };
     $('autoListing').oninput=rememberAutoDraft;
     $('autoMax').oninput=rememberAutoDraft;
-    $('autoStep').oninput=rememberAutoDraft;
 
-    document.querySelectorAll('[data-suggest-max],[data-suggest-step]').forEach(el=>{
+    document.querySelectorAll('[data-suggest-max]').forEach(el=>{
       el.oninput=()=>{
-        const listingId=el.dataset.suggestMax||el.dataset.suggestStep;
+        const listingId=el.dataset.suggestMax;
         if(!listingId)return;
-        const maxEl=document.querySelector(`[data-suggest-max="${listingId}"]`);
-        const stepEl=document.querySelector(`[data-suggest-step="${listingId}"]`);
         suggestionDrafts[listingId]={
-          max:maxEl?.value||'',
-          step:stepEl?.value||'1'
+          max:el.value||''
         };
         scheduleLocalSave();
       };
