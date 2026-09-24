@@ -1,5 +1,7 @@
 
 const DB_NAME='wikidex-db-v07', DB_VERSION=1;
+const COLLECTIONS_BACKUP_KEY='wikidexCollectionsBackupV1';
+const WISHLIST_SNAPSHOT_KEY='wikidexWishlistSnapshotV1';
 
 function norm(s){
   return (s||'').normalize('NFD').replace(/\p{Diacritic}/gu,'').toLowerCase()
@@ -312,13 +314,54 @@ async function queryCards(q='',limit=300){
   rows.sort((a,b)=>(b.seenAt||0)-(a.seenAt||0));
   return {total:rows.length,items:rows.slice(0,limit)};
 }
+async function backupCollections(){
+  const st=await store('collections');
+  const rows=await rq(st.getAll());
+  await chrome.storage.local.set({
+    [COLLECTIONS_BACKUP_KEY]:{
+      items:rows,
+      savedAt:Date.now()
+    }
+  }).catch(()=>{});
+}
+
+async function restoreCollectionsBackupIfNeeded(){
+  const st=await store('collections');
+  const rows=await rq(st.getAll());
+  if(rows.length)return rows;
+
+  const obj=await chrome.storage.local.get(COLLECTIONS_BACKUP_KEY).catch(()=>({}));
+  const backup=obj?.[COLLECTIONS_BACKUP_KEY];
+  const items=Array.isArray(backup?.items)?backup.items:[];
+
+  if(items.length){
+    const w=await store('collections','readwrite');
+    for(const c of items){
+      if(c?.id)await rq(w.put(c));
+    }
+    return items;
+  }
+
+  return [];
+}
+
 async function listCollections(){
-  const s=await store('collections'),rows=await rq(s.getAll());
+  const rows=await restoreCollectionsBackupIfNeeded();
   return rows.sort((a,b)=>(a.name||'').localeCompare(b.name||'','fr'));
 }
 async function getCollection(id){const s=await store('collections');return rq(s.get(id))}
-async function saveCollection(c){const s=await store('collections','readwrite');await rq(s.put(c));return c}
-async function deleteCollection(id){const s=await store('collections','readwrite');await rq(s.delete(id));return true}
+async function saveCollection(c){
+  const s=await store('collections','readwrite');
+  await rq(s.put(c));
+  await backupCollections();
+  return c;
+}
+async function deleteCollection(id){
+  const s=await store('collections','readwrite');
+  await rq(s.delete(id));
+  await backupCollections();
+  return true;
+}
 
 
 const RARITY_RANK = {
@@ -1424,12 +1467,19 @@ async function wdAllWishlistCardIds(tabId=null){
     }
   }
 
-  return {
+  const snapshot={
     userId:session.userId,
     cardIds,
     cards,
-    cardsLookupError
+    cardsLookupError,
+    savedAt:Date.now()
   };
+
+  await chrome.storage.local.set({
+    [WISHLIST_SNAPSHOT_KEY]:snapshot
+  }).catch(()=>{});
+
+  return snapshot;
 }
 
 function wdNormalizeListingId(value){
