@@ -911,8 +911,6 @@ async function fetchWishlistMarketplaceByTitle(tabId,wishlistCards,userId,param)
           }finally{
             clearTimeout(timer);
           }
-
-          continue;
         }catch{
           failed++;
         }
