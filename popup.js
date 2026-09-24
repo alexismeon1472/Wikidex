@@ -711,12 +711,20 @@ async function testMarketplaceCardFilter(tabId,cardId,listingId=''){
           url.searchParams.set('sort','recent');
           url.searchParams.set(param,cardId);
 
-          const r=await fetch(url.toString(),{
-            method:'GET',
-            headers:{accept:'*/*'},
-            credentials:'include',
-            cache:'no-store'
-          });
+          const controller=new AbortController();
+          const timer=setTimeout(()=>controller.abort(),5000);
+          let r;
+          try{
+            r=await fetch(url.toString(),{
+              method:'GET',
+              headers:{accept:'*/*'},
+              credentials:'include',
+              cache:'no-store',
+              signal:controller.signal
+            });
+          }finally{
+            clearTimeout(timer);
+          }
 
           const text=await r.text();
           let data=null;
@@ -759,12 +767,20 @@ async function testMarketplaceTextFilter(tabId,title,listingId=''){
           url.searchParams.set('sort','recent');
           url.searchParams.set(param,title);
 
-          const r=await fetch(url.toString(),{
-            method:'GET',
-            headers:{accept:'*/*'},
-            credentials:'include',
-            cache:'no-store'
-          });
+          const controller=new AbortController();
+          const timer=setTimeout(()=>controller.abort(),5000);
+          let r;
+          try{
+            r=await fetch(url.toString(),{
+              method:'GET',
+              headers:{accept:'*/*'},
+              credentials:'include',
+              cache:'no-store',
+              signal:controller.signal
+            });
+          }finally{
+            clearTimeout(timer);
+          }
 
           const text=await r.text();
           let data=null;
@@ -1376,11 +1392,28 @@ function marketProgressText(info=marketScanInfo){
   if(p.phase==='targetedTitle'){
     return `Recherche ${p.current}/${p.total} · ${p.matches||0} enchère(s) trouvée(s) · ${elapsed}s · ${p.title||''}`;
   }
+  if(p.phase==='wishlist'){
+    return `Lecture de la wishlist… · ${elapsed}s`;
+  }
+  if(p.phase==='probe'){
+    return `Lecture de l’enchère témoin… · ${elapsed}s`;
+  }
+  if(p.phase==='testCardFilter'){
+    return `Test du filtre card_id… · ${elapsed}s`;
+  }
+  if(p.phase==='testTextFilter'){
+    return `Test recherche marché : ${p.param||'q'}… · ${elapsed}s`;
+  }
 
   const block=p.block||info.pagesRead||0;
   const scanned=p.scanned??info.scannedListings??0;
   const matches=p.matches??info.wishlistMatches??0;
   return `Bloc ${block} · ${scanned} enchère(s) lue(s) · ${matches} correspondance(s) · ${elapsed}s`;
+}
+
+function setMarketProgress(detail){
+  marketScanInfo.progress={...(detail||{}),at:Date.now()};
+  updateMarketProgressDom();
 }
 
 function updateMarketProgressDom(){
@@ -1407,6 +1440,7 @@ async function scanWishlistMarketplace(){
 
     const tabId=tabs[0].id;
 
+    setMarketProgress({phase:'wishlist'});
     const wishlist=await chrome.runtime.sendMessage({
       type:'WISHLIST_GET_ALL',
       tabId
@@ -1423,6 +1457,7 @@ async function scanWishlistMarketplace(){
 
     const detailTab=tabs.find(t=>/\/marketplace\/[0-9a-f-]{36}(?:[/?#]|$)/i.test(String(t.url||'')));
     if(detailTab){
+      setMarketProgress({phase:'probe'});
       const idMatch=String(detailTab.url||'').match(/[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}/i);
       if(idMatch){
         try{
@@ -1448,6 +1483,7 @@ async function scanWishlistMarketplace(){
     let textFilter=null;
 
     if(openListingProbe?.marketCardId){
+      setMarketProgress({phase:'testCardFilter'});
       cardFilter=await testMarketplaceCardFilter(
         tabId,
         openListingProbe.marketCardId,
@@ -1462,6 +1498,7 @@ async function scanWishlistMarketplace(){
       openListingProbe?.listingId &&
       wishlistCards.length
     ){
+      setMarketProgress({phase:'testTextFilter',param:'q/search/query'});
       textFilter=await testMarketplaceTextFilter(
         tabId,
         openListingProbe.title,
