@@ -1576,6 +1576,7 @@ const WD_BG_ENGINE_STATUS_KEY='wikidexAutoEngineStatusV1';
 const WD_BG_BALANCE_KEY='wikidexWikiBidouBalanceV1';
 const WD_BG_LOW_BALANCE_KEY='wikidexLowBalanceStateV1';
 const WD_BG_LOW_BALANCE_THRESHOLD=100;
+const WD_BG_INCREMENT_PCT=11;
 const WD_BG_TICK_MIN_MS=2200;
 
 let wdBgRunning=false;
@@ -1584,6 +1585,18 @@ let wdBgLastBalanceReadAt=0;
 
 function wdBgRoundMoney(n){
   return Math.round((Number(n)+Number.EPSILON)*100)/100;
+}
+
+function wdBgNextBid(base){
+  const n=Number(base);
+  if(!Number.isFinite(n)||n<0)return NaN;
+
+  // WikiMasters: each new bid must be 11% above the previous one.
+  // Wikibidous are treated as whole units, so always round upward.
+  return Math.max(
+    Math.ceil(n*(1+WD_BG_INCREMENT_PCT/100)),
+    Math.floor(n)+1
+  );
 }
 
 function wdBgAuctionTitle(a){
@@ -1700,7 +1713,7 @@ async function wdBgPersistItem(runtimeItem){
     ...latest,
     ...runtimeItem,
     max:latest.max,
-    step:latest.step,
+    incrementPct:WD_BG_INCREMENT_PCT,
     enabled:latest.enabled===false ? false : runtimeItem.enabled
   };
 
@@ -2011,14 +2024,14 @@ async function wdBgProcessOne(item,tabId){
   }
 
   const base=Number(a.current_bid ?? a.base_amount ?? 0);
-  const next=wdBgRoundMoney(base+Number(item.step||1));
+  const next=wdBgNextBid(base);
 
   if(next>Number(item.max)+1e-9){
     item.enabled=false;
     item.lastAction=`Plafond atteint (${item.max})`;
     wdBgAddLog(
       item,
-      `Pas de surenchère : ${next} > plafond ${item.max}`
+      `Pas de surenchère : +11 % ⇒ ${next} > plafond ${item.max}`
     );
 
     const capKey=`${base}|${item.max}`;
@@ -2063,13 +2076,11 @@ async function wdBgProcessOne(item,tabId){
   const persisted=await wdBgPersistItem(item);
   if(!persisted || persisted.enabled===false)return item;
 
-  // Preserve newest max/step before committing the bid.
+  // Preserve the newest ceiling before committing the bid.
   item.max=persisted.max;
-  item.step=persisted.step;
+  item.incrementPct=WD_BG_INCREMENT_PCT;
 
-  const recheckNext=wdBgRoundMoney(
-    base+Number(item.step||1)
-  );
+  const recheckNext=wdBgNextBid(base);
 
   if(recheckNext>Number(item.max)+1e-9){
     item.enabled=false;
