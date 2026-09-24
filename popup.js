@@ -5,6 +5,7 @@ let tab='results', rawResults=[], results=[], selected=new Set(), cols=[], page=
 
 const AUTOBID_KEY='wikidexAutoBidsV010';
 const WIKIBIDOU_BALANCE_KEY='wikidexWikiBidouBalanceV1';
+const AUTOBID_INCREMENT_PCT=11;
 let autoBids=[];
 let autoTickRunning=false;
 let autoTimer=null;
@@ -783,6 +784,14 @@ function auctionClosed(a){
 }
 function roundMoney(n){
   return Math.round((Number(n)+Number.EPSILON)*100)/100;
+}
+function nextAutoBidAmount(base){
+  const n=Number(base);
+  if(!Number.isFinite(n)||n<0)return NaN;
+  return Math.max(
+    Math.ceil(n*(1+AUTOBID_INCREMENT_PCT/100)),
+    Math.floor(n)+1
+  );
 }
 function addAutoLog(item,msg){
   item.logs=Array.isArray(item.logs)?item.logs:[];
@@ -1795,25 +1804,17 @@ async function addSuggestionAutoBid(listingId){
   if(!row)return;
 
   const maxEl=document.querySelector(`[data-suggest-max="${listingId}"]`);
-  const stepEl=document.querySelector(`[data-suggest-step="${listingId}"]`);
   const max=Number(maxEl?.value);
-  const step=Number(stepEl?.value||1);
 
   if(!Number.isFinite(max)||max<=0){
     $('status').textContent='Définis un plafond pour cette suggestion.';
     maxEl?.focus();
     return;
   }
-  if(!Number.isFinite(step)||step<=0){
-    $('status').textContent='Pas de surenchère invalide.';
-    stepEl?.focus();
-    return;
-  }
 
   await createAutoBid({
     listing:`https://www.wiki-masters.com/marketplace/${listingId}`,
-    max:String(max),
-    step:String(step)
+    max:String(max)
   });
 
   // Remove suggestion once it has become an auto-bid.
@@ -2007,15 +2008,13 @@ async function configureTrackedAutoBid(id){
 
   autoDraft={
     listing:`https://www.wiki-masters.com/marketplace/${item.listingId}`,
-    max:'',
-    step:String(item.step||1)
+    max:''
   };
 
   await persistUiState();
 
   if($('autoListing'))$('autoListing').value=autoDraft.listing;
   if($('autoMax'))$('autoMax').value='';
-  if($('autoStep'))$('autoStep').value=autoDraft.step;
 
   $('status').textContent=`Définis le plafond AutoBid pour ${item.title||'cette enchère'}.`;
   $('autoMax')?.focus();
@@ -2029,24 +2028,20 @@ async function createAutoBid(input=null){
   if(hasExplicitInput){
     autoDraft={
       listing:input.listing||'',
-      max:String(input.max??''),
-      step:String(input.step??'1')
+      max:String(input.max??'')
     };
   }else{
     autoDraft={
       listing:$('autoListing')?.value||'',
-      max:$('autoMax')?.value||'',
-      step:$('autoStep')?.value||'1'
+      max:$('autoMax')?.value||''
     };
   }
 
   const listing=autoDraft.listing.trim();
   const max=Number(autoDraft.max);
-  const step=Number(autoDraft.step||1);
 
   if(!listing){$('status').textContent='Colle une URL ou un ID d’enchère.';return}
   if(!Number.isFinite(max)||max<=0){$('status').textContent='Plafond invalide.';return}
-  if(!Number.isFinite(step)||step<=0){$('status').textContent='Pas de surenchère invalide.';return}
 
   $('status').textContent='Lecture de l’enchère…';
 
@@ -2065,7 +2060,8 @@ async function createAutoBid(input=null){
 
     item.mode='autobid';
     item.max=roundMoney(max);
-    item.step=roundMoney(step);
+    item.incrementPct=AUTOBID_INCREMENT_PCT;
+    delete item.step;
     item.enabled=!auctionClosed(a);
     item.title=auctionTitle(a);
     item.currentBid=Number(a.current_bid ?? a.base_amount ?? 0);
@@ -2088,7 +2084,7 @@ async function createAutoBid(input=null){
     if(!existing)autoBids.push(item);
     await saveAutoBids();
     chrome.runtime.sendMessage({type:'AUTOBID_WAKE'}).catch(()=>{});
-    autoDraft={listing:'',max:'',step:String(step||1)};
+    autoDraft={listing:'',max:''};
     await persistUiState();
     $('status').textContent=`Auto-enchère ${item.enabled?'activée':'créée mais inactive'} : ${item.title}`;
     render();
@@ -2171,12 +2167,12 @@ async function processAutoBid(item){
   }
 
   const base=Number(a.current_bid ?? a.base_amount ?? 0);
-  const next=roundMoney(base+Number(item.step||1));
+  const next=nextAutoBidAmount(base);
 
   if(next>Number(item.max)+1e-9){
     item.enabled=false;
     item.lastAction=`Plafond atteint (${money(item.max)})`;
-    addAutoLog(item,`Pas de surenchère : ${money(next)} > plafond ${money(item.max)}`);
+    addAutoLog(item,`Pas de surenchère : +11 % ⇒ ${money(next)} > plafond ${money(item.max)}`);
     return;
   }
 
