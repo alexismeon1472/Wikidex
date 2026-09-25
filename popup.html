@@ -96,10 +96,40 @@ dialog{width:430px;background:#171b22;color:#fff;border:1px solid #343c49;border
 .marketProbe.bad{border-color:#70434a;color:#ef9ca5}
 .marketProbe code{font-size:9px;color:#cbd4df;word-break:break-all}
 
+.cleanupHero{background:#141920;border:1px solid #29313c;border-radius:10px;padding:11px;margin-bottom:9px}
+.cleanupTitle{font-size:14px;font-weight:850}
+.cleanupTitle span{display:inline-block;background:#303849;border-radius:5px;padding:2px 5px;font-size:10px;margin-left:4px}
+.cleanupDesc{font-size:10.5px;color:#9da8b7;line-height:1.45;margin-top:5px}
+.cleanupOption{display:flex;align-items:center;gap:7px;background:#11161d;border:1px solid #29313c;border-radius:8px;padding:8px;margin-bottom:8px;font-size:10.5px;color:#c5ced9}
+.cleanupOption input{width:15px;height:15px}
+.cleanupActions{display:flex;gap:6px;align-items:center;margin-bottom:8px}
+.cleanupActions button{padding:6px 9px;font-size:10px}
+.cleanupNotice{padding:9px;border:1px solid #29313c;border-radius:8px;background:#11161d;color:#9da8b7;font-size:10.5px;line-height:1.45}
+.cleanupError{padding:9px;border:1px solid #70434a;border-radius:8px;background:#25181b;color:#ef9ca5;font-size:10.5px}
+.cleanupStats{display:grid;grid-template-columns:repeat(5,1fr);gap:5px;margin:9px 0}
+.cleanupStats>div{background:#141920;border:1px solid #29313c;border-radius:8px;padding:7px;text-align:center}
+.cleanupStats b{display:block;font-size:15px}
+.cleanupStats span{display:block;font-size:8.5px;color:#8f99a8;line-height:1.2;margin-top:2px}
+.cleanupStats .dangerStat{border-color:#70434a}
+.cleanupStats .dangerStat b{color:#ef9ca5}
+.cleanupMeta{font-size:9.5px;color:#8f99a8;margin:5px 1px 8px}
+.cleanupPreviewHead{display:flex;justify-content:space-between;align-items:center;margin:9px 1px 5px;font-size:10px}
+.cleanupPreviewHead span{color:#8f99a8;font-size:9px}
+.cleanupPreview{max-height:285px;overflow:auto;border:1px solid #29313c;border-radius:8px;background:#10141a}
+.cleanupItem{display:flex;gap:7px;align-items:center;padding:6px 7px;border-bottom:1px solid #202630}
+.cleanupItem:last-child{border-bottom:0}
+.cleanupItemTitle{flex:1;font-size:10px;color:#d2d9e2}
+.cleanupItem code{font-size:8px;color:#6f7a89;max-width:155px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.cleanupSafe{padding:18px;text-align:center;border:1px solid #2d6b4b;background:#132019;border-radius:8px;color:#9de0b5;font-size:11px}
+.cleanupProgress{margin:8px 0}
+.cleanupProgressText{font-size:10px;color:#cbd4df;margin-bottom:5px}
+.cleanupProgressTrack{height:7px;background:#242a34;border-radius:999px;overflow:hidden}
+.cleanupProgressBar{height:100%;background:#6857ff;border-radius:999px;transition:width .2s ease}
+
 </style></head><body>
 <header>
 <div class="row" style="margin-bottom:8px">
-<h1 style="margin:0;flex:1">WikiDex v0.12.5</h1>
+<h1 style="margin:0;flex:1">WikiDex v0.13.0</h1>
 <button id="openSide">⇱ Panneau latéral</button>
 </div>
 <div class="row">
@@ -123,6 +153,7 @@ dialog{width:430px;background:#171b22;color:#fff;border:1px solid #343c49;border
 <button class="tab" data-tab="collections">Collections</button>
 <button class="tab" data-tab="library">Bibliothèque</button>
 <button class="tab" data-tab="autobid">Auto-enchères</button>
+<button class="tab" data-tab="cleanup">Nettoyage</button>
 </div>
 <div id="status">Prêt.</div>
 </header>
