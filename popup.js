@@ -2240,17 +2240,30 @@ async function syncMyBidsFromWikiMasters(){
   $('status').textContent='Synchronisation de Marché → Mes enchères…';
 
   let tempTab=null;
+  let syncTab=null;
 
   try{
-    tempTab=await chrome.tabs.create({
-      url:'https://www.wiki-masters.com/marketplace#wikidex-sync',
-      active:false
+    const existingTabs=await marketplaceTabs('');
+    const rootMarketplaceTabs=existingTabs.filter(t=>{
+      const url=String(t.url||'');
+      return /^https:\/\/(?:www\.)?wiki-masters\.com\/marketplace\/?(?:[?#].*)?$/i.test(url) &&
+        !url.includes('#wikidex-sync');
     });
 
-    await waitWikiMastersSyncTab(tempTab.id);
-    await new Promise(r=>setTimeout(r,500));
+    // Prefer the Marketplace page the user is already looking at.
+    syncTab=rootMarketplaceTabs.find(t=>t.active)||rootMarketplaceTabs[0]||null;
 
-    const found=await chrome.tabs.sendMessage(tempTab.id,{
+    if(!syncTab){
+      tempTab=await chrome.tabs.create({
+        url:'https://www.wiki-masters.com/marketplace#wikidex-sync',
+        active:false
+      });
+      syncTab=tempTab;
+      await waitWikiMastersSyncTab(syncTab.id);
+      await new Promise(r=>setTimeout(r,500));
+    }
+
+    const found=await chrome.tabs.sendMessage(syncTab.id,{
       type:'WD_DISCOVER_MY_BIDS'
     });
 
@@ -2274,7 +2287,7 @@ async function syncMyBidsFromWikiMasters(){
     try{
       const u=await chrome.runtime.sendMessage({
         type:'SESSION_USER_ID',
-        tabId:tempTab.id
+        tabId:syncTab.id
       });
       if(!u?.error)userId=u?.userId||null;
     }catch{}
@@ -2288,7 +2301,7 @@ async function syncMyBidsFromWikiMasters(){
       $('status').textContent=`Synchronisation ${i+1}/${listingIds.length}…`;
 
       try{
-        const page=await runMarketplaceMainGet(tempTab.id,listingId);
+        const page=await runMarketplaceMainGet(syncTab.id,listingId);
         const a=page?.data?.auction;
         if(!page?.ok || !a){
           failed++;
@@ -2368,8 +2381,16 @@ async function syncMyBidsFromWikiMasters(){
     await persistUiState();
     chrome.runtime.sendMessage({type:'AUTOBID_WAKE'}).catch(()=>{});
 
+    const sourceLabel=tempTab
+      ? 'onglet temporaire'
+      : 'page Marché déjà ouverte';
+
+    const expectedInfo=Number.isFinite(found?.expectedCount)
+      ? ` · ${listingIds.length}/${found.expectedCount} détectée(s)`
+      : '';
+
     $('status').textContent=
-      `Synchronisation terminée · +${added} nouvelle(s) · ${updated} déjà connue(s) · ${failed} échec(s)`;
+      `Synchronisation terminée · +${added} nouvelle(s) · ${updated} déjà connue(s) · ${failed} échec(s) · ${sourceLabel}${expectedInfo}`;
 
     await render();
   }catch(e){
