@@ -16,6 +16,21 @@ let marketScanInfo={status:'',scannedListings:0,wishlistMatches:0,sourceUrl:'',s
 let wikibidouBalance={amount:null,status:'idle',updatedAt:0,error:''};
 let autoEngineStatus={active:false,enabledCount:0,lastTickAt:0,reason:'unknown'};
 let autoSort='priority';
+let cleanupProtectStarred=true;
+let cleanupState={
+  status:'idle',
+  commons:[],
+  toDiscard:[],
+  wishlistCount:0,
+  protectedWishlist:0,
+  protectedPending:0,
+  protectedStarred:0,
+  pagesRead:0,
+  scanned:0,
+  done:0,
+  failed:0,
+  error:''
+};
 
 
 const UI_STATE_KEY='wikidexUiStateV077';
@@ -38,6 +53,7 @@ async function persistUiState(){
     marketSuggestions,
     marketScanInfo,
     autoSort,
+    cleanupProtectStarred,
     savedAt:Date.now()
   };
   await chrome.storage.local.set({[UI_STATE_KEY]:state}).catch(()=>{});
@@ -72,6 +88,7 @@ async function restoreUiState(){
       });
     }
     if(['priority','end','priceAsc','priceDesc','maxAsc','track','autobid'].includes(state.autoSort)) autoSort=state.autoSort;
+    if(typeof state.cleanupProtectStarred==='boolean') cleanupProtectStarred=state.cleanupProtectStarred;
     if(state.marketScanInfo&&typeof state.marketScanInfo==='object'){
       marketScanInfo={...state.marketScanInfo,restored:true};
       if(marketScanInfo.status==='scan') marketScanInfo.status=marketSuggestions.length?'done':'';
@@ -329,6 +346,363 @@ async function marketplaceTabs(listingId=''){
   });
 
   return unique;
+}
+
+async function runWikiCollectionPage(tabId,page){
+  const executed=await chrome.scripting.executeScript({
+    target:{tabId},
+    world:'MAIN',
+    args:[page],
+    func:async page=>{
+      const url=new URL('https://www.wiki-masters.com/api/my-collection');
+      url.searchParams.set('sort','rarity');
+      url.searchParams.set('rarity','C');
+      url.searchParams.set('page',String(page));
+      url.searchParams.set('stats','0');
+
+      const waits=[0,500,1400];
+      let last=null;
+
+      for(const wait of waits){
+        if(wait)await new Promise(r=>setTimeout(r,wait));
+
+        try{
+          const r=await fetch(url.toString(),{
+            method:'GET',
+            headers:{accept:'*/*'},
+            credentials:'include',
+            cache:'no-store'
+          });
+
+          const text=await r.text();
+          let data=null;
+          try{data=text?JSON.parse(text):null}catch{data=text}
+
+          last={
+            ok:r.ok,
+            status:r.status,
+            data,
+            page
+          };
+
+          if(r.ok)return last;
+          if(![429,500,502,503,504].includes(r.status))return last;
+        }catch(e){
+          last={
+            ok:false,
+            status:0,
+            error:e?.message||String(e),
+            page
+          };
+        }
+      }
+
+      return last;
+    }
+  });
+
+  return executed?.[0]?.result||null;
+}
+
+async function runWikiDiscardUserCard(tabId,userCardId){
+  const executed=await chrome.scripting.executeScript({
+    target:{tabId},
+    world:'MAIN',
+    args:[userCardId],
+    func:async id=>{
+      // Destructive action: EXACTLY ONE POST attempt. Never retry.
+      const url=
+        'https://www.wiki-masters.com/api/user-cards/'+
+        encodeURIComponent(id)+
+        '/discard';
+
+      try{
+        const r=await fetch(url,{
+          method:'POST',
+          headers:{accept:'*/*'},
+          credentials:'include',
+          cache:'no-store'
+        });
+
+        const text=await r.text();
+        let data=null;
+        try{data=text?JSON.parse(text):null}catch{data=text}
+
+        return {
+          ok:r.ok,
+          status:r.status,
+          data,
+          text
+        };
+      }catch(e){
+        return {
+          ok:false,
+          status:0,
+          error:e?.message||String(e)
+        };
+      }
+    }
+  });
+
+  return executed?.[0]?.result||null;
+}
+
+async function loadAllCommonUserCards(tabId){
+  const items=[];
+  const seenUserCards=new Set();
+  const pendingTradeIds=new Set();
+  let pagesRead=0;
+
+  for(let page=0;page<100;page++){
+    const r=await runWikiCollectionPage(tabId,page);
+    if(!r)throw new Error('Aucune réponse de la collection WikiMasters.');
+    if(!r.ok){
+      throw new Error(
+        `Lecture collection impossible (HTTP ${r.status||0}) page ${page}.`
+      );
+    }
+
+    const rows=Array.isArray(r.data?.collection)
+      ? r.data.collection
+      : [];
+
+    for(const x of Array.isArray(r.data?.pendingTradeCardIds)
+      ? r.data.pendingTradeCardIds
+      : []){
+      if(x)pendingTradeIds.add(String(x));
+    }
+
+    if(!rows.length){
+      pagesRead=page+1;
+      break;
+    }
+
+    let added=0;
+
+    for(const row of rows){
+      const userCardId=String(row?.id||'');
+      if(!userCardId || seenUserCards.has(userCardId))continue;
+
+      seenUserCards.add(userCardId);
+      items.push(row);
+      added++;
+    }
+
+    pagesRead=page+1;
+
+    // The endpoint does not expose a reliable total. If page=N returns
+    // no new owned-card IDs, pagination is exhausted or page is ignored.
+    if(!added)break;
+  }
+
+  return {
+    items,
+    pendingTradeIds,
+    pagesRead
+  };
+}
+
+async function analyzeCommonCleanup(){
+  cleanupState={
+    ...cleanupState,
+    status:'scan',
+    commons:[],
+    toDiscard:[],
+    pagesRead:0,
+    scanned:0,
+    done:0,
+    failed:0,
+    error:''
+  };
+  render();
+
+  try{
+    const tabs=await marketplaceTabs('');
+    const tabInfo=tabs.find(t=>!String(t.url||'').includes('#wikidex-sync'));
+    if(!tabInfo)throw new Error('Garde au moins un onglet WikiMasters ouvert.');
+
+    $('status').textContent='Nettoyage : lecture de la wishlist…';
+
+    const wishlist=await chrome.runtime.sendMessage({
+      type:'WISHLIST_GET_ALL',
+      tabId:tabInfo.id
+    });
+
+    if(wishlist?.error)throw new Error(wishlist.error);
+
+    const wishlistIds=new Set(
+      (Array.isArray(wishlist?.cardIds)?wishlist.cardIds:[])
+        .map(normalizeCardKey)
+        .filter(Boolean)
+    );
+
+    $('status').textContent='Nettoyage : lecture des cartes communes…';
+
+    const collection=await loadAllCommonUserCards(tabInfo.id);
+    const pending=collection.pendingTradeIds;
+
+    const commons=collection.items.filter(row=>
+      String(row?.card?.rarity||'').toUpperCase()==='C'
+    );
+
+    const toDiscard=[];
+    let protectedWishlist=0;
+    let protectedPending=0;
+    let protectedStarred=0;
+
+    for(const row of commons){
+      const cardId=normalizeCardKey(row?.card_id||row?.card?.id);
+      const userCardId=String(row?.id||'');
+
+      if(cardId && wishlistIds.has(cardId)){
+        protectedWishlist++;
+        continue;
+      }
+
+      if(
+        pending.has(userCardId) ||
+        (cardId && pending.has(cardId))
+      ){
+        protectedPending++;
+        continue;
+      }
+
+      if(cleanupProtectStarred && row?.starred){
+        protectedStarred++;
+        continue;
+      }
+
+      if(userCardId)toDiscard.push(row);
+    }
+
+    cleanupState={
+      status:'ready',
+      commons,
+      toDiscard,
+      wishlistCount:wishlistIds.size,
+      protectedWishlist,
+      protectedPending,
+      protectedStarred,
+      pagesRead:collection.pagesRead,
+      scanned:commons.length,
+      done:0,
+      failed:0,
+      error:''
+    };
+
+    $('status').textContent=
+      `Nettoyage prêt : ${toDiscard.length} carte(s) commune(s) défaussable(s).`;
+
+    render();
+  }catch(e){
+    cleanupState={
+      ...cleanupState,
+      status:'error',
+      error:e.message||String(e)
+    };
+    $('status').textContent='Nettoyage : '+cleanupState.error;
+    render();
+  }
+}
+
+async function discardCommonCleanup(){
+  if(cleanupState.status!=='ready')return;
+
+  const queue=[...cleanupState.toDiscard];
+  if(!queue.length)return;
+
+  const ok=confirm(
+    `Défausser définitivement ${queue.length} carte(s) commune(s) hors wishlist ?\n\n`+
+    'Les cartes protégées par wishlist, transaction et étoile ne seront pas touchées.'
+  );
+  if(!ok)return;
+
+  const tabs=await marketplaceTabs('');
+  const tabInfo=tabs.find(t=>!String(t.url||'').includes('#wikidex-sync'));
+  if(!tabInfo){
+    $('status').textContent='Garde au moins un onglet WikiMasters ouvert.';
+    return;
+  }
+
+  cleanupState={
+    ...cleanupState,
+    status:'discard',
+    done:0,
+    failed:0,
+    error:''
+  };
+  render();
+
+  let consecutiveFailures=0;
+
+  for(let i=0;i<queue.length;i++){
+    const row=queue[i];
+
+    cleanupState.done=i;
+    $('status').textContent=
+      `Défausse ${i+1}/${queue.length} · ${row?.card?.wikipedia_title||'Carte'}`;
+    updateCleanupProgressDom();
+
+    const r=await runWikiDiscardUserCard(tabInfo.id,row.id);
+
+    if(r?.ok){
+      consecutiveFailures=0;
+      cleanupState.done=i+1;
+
+      const balance=Number(r?.data?.balance);
+      if(Number.isFinite(balance)){
+        wikibidouBalance={
+          amount:balance,
+          status:'ok',
+          updatedAt:Date.now(),
+          error:''
+        };
+
+        await chrome.storage.local.set({
+          [WIKIBIDOU_BALANCE_KEY]:{
+            amount:balance,
+            updatedAt:wikibidouBalance.updatedAt
+          }
+        }).catch(()=>{});
+      }
+    }else{
+      cleanupState.failed++;
+      consecutiveFailures++;
+
+      // Never retry a destructive POST automatically.
+      if(consecutiveFailures>=3){
+        cleanupState.error=
+          'Arrêt de sécurité après 3 échecs consécutifs. Aucun POST en échec n’a été retenté.';
+        break;
+      }
+    }
+
+    // Keep the batch deliberately sequential and gentle on the API.
+    await new Promise(r=>setTimeout(r,250));
+  }
+
+  const completed=cleanupState.done;
+  const failed=cleanupState.failed;
+
+  $('status').textContent=cleanupState.error
+    ? `Nettoyage interrompu · ${completed} réussie(s) · ${failed} échec(s)`
+    : `Nettoyage terminé · ${completed} réussie(s) · ${failed} échec(s)`;
+
+  // Re-read the server state instead of trusting the local queue after writes.
+  await analyzeCommonCleanup();
+}
+
+function updateCleanupProgressDom(){
+  const el=$('cleanupProgress');
+  if(!el)return;
+
+  const total=cleanupState.toDiscard.length||0;
+  const done=Math.min(cleanupState.done||0,total);
+  const pct=total?Math.round(done/total*100):0;
+
+  el.innerHTML=
+    `<div class="cleanupProgressText">${done}/${total} · ${pct}% · ${cleanupState.failed||0} échec(s)</div>`+
+    `<div class="cleanupProgressTrack"><div class="cleanupProgressBar" style="width:${pct}%"></div></div>`;
 }
 
 async function runMarketplaceMainGet(tabId,listingId){
