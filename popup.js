@@ -3014,6 +3014,102 @@ async function render(){
     document.querySelectorAll('[data-auto-delete]').forEach(b=>b.onclick=()=>deleteAutoBid(b.dataset.autoDelete));
   }
 
+  if(tab==='cleanup'){
+    const ready=cleanupState.status==='ready';
+    const scanning=cleanupState.status==='scan';
+    const discarding=cleanupState.status==='discard';
+    const error=cleanupState.status==='error';
+
+    const preview=(cleanupState.toDiscard||[]).slice(0,120).map(row=>{
+      const title=row?.card?.wikipedia_title||row?.card?.category||row?.card_id||'Carte';
+      const star=row?.starred?' ★':'';
+      return `<div class="cleanupItem">
+        <span class="cleanupItemTitle">${esc(title)}${star}</span>
+        <code>${esc(String(row?.id||''))}</code>
+      </div>`;
+    }).join('');
+
+    $('body').innerHTML=`
+      <div class="cleanupHero">
+        <div>
+          <div class="cleanupTitle">Nettoyage des cartes communes <span>C</span></div>
+          <div class="cleanupDesc">
+            WikiDex compare les cartes communes possédées à ta wishlist.
+            Les cartes présentes dans la wishlist ou dans une transaction sont toujours protégées.
+          </div>
+        </div>
+      </div>
+
+      <label class="cleanupOption">
+        <input id="protectStarred" type="checkbox" ${cleanupProtectStarred?'checked':''}>
+        <span>Protéger aussi les cartes étoilées</span>
+      </label>
+
+      <div class="cleanupActions">
+        <button id="analyzeCleanup" class="primary" ${scanning||discarding?'disabled':''}>
+          ${scanning?'Analyse…':'Analyser mes communes'}
+        </button>
+        ${ready && cleanupState.toDiscard.length
+          ? `<button id="discardCleanup" class="danger">Défausser ${cleanupState.toDiscard.length} carte(s)</button>`
+          : ''}
+      </div>
+
+      ${scanning
+        ? '<div class="cleanupNotice">Lecture de la wishlist et de la collection WikiMasters…</div>'
+        : ''}
+
+      ${error
+        ? `<div class="cleanupError">${esc(cleanupState.error||'Erreur')}</div>`
+        : ''}
+
+      ${ready || discarding
+        ? `
+          <div class="cleanupStats">
+            <div><b>${cleanupState.scanned||0}</b><span>Communes trouvées</span></div>
+            <div><b>${cleanupState.protectedWishlist||0}</b><span>Wishlist</span></div>
+            <div><b>${cleanupState.protectedPending||0}</b><span>En transaction</span></div>
+            <div><b>${cleanupState.protectedStarred||0}</b><span>Étoilées protégées</span></div>
+            <div class="dangerStat"><b>${cleanupState.toDiscard.length||0}</b><span>À défausser</span></div>
+          </div>
+
+          <div class="cleanupMeta">
+            Wishlist : <b>${cleanupState.wishlistCount||0}</b> carte(s)
+            · ${cleanupState.pagesRead||0} page(s) collection lue(s)
+          </div>
+
+          ${discarding?'<div id="cleanupProgress" class="cleanupProgress"></div>':''}
+
+          ${cleanupState.toDiscard.length
+            ? `
+              <div class="cleanupPreviewHead">
+                <b>Prévisualisation</b>
+                <span>${cleanupState.toDiscard.length>120?'120 premières affichées':''}</span>
+              </div>
+              <div class="cleanupPreview">${preview}</div>
+            `
+            : '<div class="cleanupSafe">Aucune carte commune hors wishlist à défausser 🎉</div>'}
+        `
+        : `
+          <div class="cleanupNotice">
+            Aucune suppression n’est effectuée pendant l’analyse.
+            La défausse nécessite une confirmation séparée.
+          </div>
+        `}
+    `;
+
+    $('protectStarred').onchange=async e=>{
+      cleanupProtectStarred=!!e.target.checked;
+      await persistUiState();
+      if(cleanupState.status==='ready'){
+        analyzeCommonCleanup();
+      }
+    };
+
+    $('analyzeCleanup').onclick=analyzeCommonCleanup;
+    if($('discardCleanup'))$('discardCleanup').onclick=discardCommonCleanup;
+    if(discarding)updateCleanupProgressDom();
+  }
+
   if(tab==='collections'){
     if(openCol){
       const col=cols.find(c=>c.id===openCol);
