@@ -638,7 +638,6 @@ async function discardCommonCleanup(){
   for(let i=0;i<queue.length;i++){
     const row=queue[i];
 
-    cleanupState.done=i;
     $('status').textContent=
       `Défausse ${i+1}/${queue.length} · ${row?.card?.wikipedia_title||'Carte'}`;
     updateCleanupProgressDom();
@@ -647,7 +646,7 @@ async function discardCommonCleanup(){
 
     if(r?.ok){
       consecutiveFailures=0;
-      cleanupState.done=i+1;
+      cleanupState.done++;
 
       const balance=Number(r?.data?.balance);
       if(Number.isFinite(balance)){
@@ -697,11 +696,14 @@ function updateCleanupProgressDom(){
   if(!el)return;
 
   const total=cleanupState.toDiscard.length||0;
-  const done=Math.min(cleanupState.done||0,total);
-  const pct=total?Math.round(done/total*100):0;
+  const processed=Math.min(
+    (cleanupState.done||0)+(cleanupState.failed||0),
+    total
+  );
+  const pct=total?Math.round(processed/total*100):0;
 
   el.innerHTML=
-    `<div class="cleanupProgressText">${done}/${total} · ${pct}% · ${cleanupState.failed||0} échec(s)</div>`+
+    `<div class="cleanupProgressText">${processed}/${total} · ${pct}% · ${cleanupState.done||0} réussie(s) · ${cleanupState.failed||0} échec(s)</div>`+
     `<div class="cleanupProgressTrack"><div class="cleanupProgressBar" style="width:${pct}%"></div></div>`;
 }
 
