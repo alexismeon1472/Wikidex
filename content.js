@@ -393,6 +393,10 @@ async function wdDiscoverMyBids(){
   });
 
   const tab=candidates[0]||null;
+  const tabText=String(tab?.innerText||tab?.textContent||'');
+  const countMatch=tabText.match(/\((\d+)\)/);
+  const expectedCount=countMatch?Number(countMatch[1]):null;
+
   if(tab){
     try{
       tab.scrollIntoView({block:'nearest'});
@@ -400,37 +404,75 @@ async function wdDiscoverMyBids(){
     }catch{}
   }
 
-  // Allow the SPA to render the user's active-bids panel.
-  await new Promise(r=>setTimeout(r,900));
-
-  const ids=new Set();
   const re=/\/marketplace\/([0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})/ig;
 
-  for(const a of document.querySelectorAll('a[href*="/marketplace/"]')){
-    if(!visible(a))continue;
-    const href=a.href||a.getAttribute('href')||'';
-    let m;
-    while((m=re.exec(href)))ids.add(m[1].toLowerCase());
-    re.lastIndex=0;
-  }
+  const scanIds=()=>{
+    const ids=new Set();
 
-  // Some SPA cards store their route in a data attribute rather than href.
-  for(const el of document.querySelectorAll('[data-href],[data-url],[data-link]')){
-    if(!visible(el))continue;
-    const raw=[
-      el.getAttribute('data-href'),
-      el.getAttribute('data-url'),
-      el.getAttribute('data-link')
-    ].filter(Boolean).join(' ');
+    for(const a of document.querySelectorAll('a[href*="/marketplace/"]')){
+      if(!visible(a))continue;
+      const href=a.href||a.getAttribute('href')||'';
+      let m;
+      while((m=re.exec(href)))ids.add(m[1].toLowerCase());
+      re.lastIndex=0;
+    }
 
-    let m;
-    while((m=re.exec(raw)))ids.add(m[1].toLowerCase());
-    re.lastIndex=0;
+    // Some SPA cards store their route in a data attribute rather than href.
+    for(const el of document.querySelectorAll('[data-href],[data-url],[data-link]')){
+      if(!visible(el))continue;
+      const raw=[
+        el.getAttribute('data-href'),
+        el.getAttribute('data-url'),
+        el.getAttribute('data-link')
+      ].filter(Boolean).join(' ');
+
+      let m;
+      while((m=re.exec(raw)))ids.add(m[1].toLowerCase());
+      re.lastIndex=0;
+    }
+
+    return ids;
+  };
+
+  // Wait for the SPA rather than assuming that 900 ms is enough.
+  // If WikiMasters exposes "Mes enchères (N)", wait until N cards are visible.
+  const started=Date.now();
+  let ids=new Set();
+  let stableCount=-1;
+  let stableTicks=0;
+
+  while(Date.now()-started<8000){
+    ids=scanIds();
+
+    if(expectedCount===0)break;
+    if(Number.isFinite(expectedCount) && expectedCount>0 && ids.size>=expectedCount){
+      break;
+    }
+
+    if(ids.size===stableCount && ids.size>0){
+      stableTicks++;
+    }else{
+      stableCount=ids.size;
+      stableTicks=0;
+    }
+
+    // If no count is available, accept a stable rendered list after ~1.5 s.
+    if(
+      !Number.isFinite(expectedCount) &&
+      Date.now()-started>1500 &&
+      stableTicks>=3
+    ){
+      break;
+    }
+
+    await new Promise(r=>setTimeout(r,250));
   }
 
   return {
     ids:[...ids],
     tabFound:!!tab,
+    expectedCount:Number.isFinite(expectedCount)?expectedCount:null,
+    waitedMs:Date.now()-started,
     pageUrl:location.href,
     pageText:(document.body?.innerText||'').slice(0,500)
   };
