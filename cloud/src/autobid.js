@@ -315,15 +315,40 @@ function publicState(state) {
     return {
       ok: true,
       configured: false,
-      running: false
+      running: false,
+      paused: false,
+      archived: false
     };
   }
+
+  const legacyCap =
+    state.lastAction === "cap-reached" ||
+    state.lastAction === "cap-reached-before-post";
+
+  const archived = !!(
+    state.result === "won" ||
+    state.result === "lost" ||
+    state.lastAction === "finished-won" ||
+    state.lastAction === "finished-lost" ||
+    (
+      state.finishedAt &&
+      !legacyCap
+    )
+  );
+
+  const paused = !archived && !!(
+    state.pausedAt ||
+    state.stoppedAt ||
+    legacyCap ||
+    (!state.enabled && !state.finishedAt)
+  );
 
   return {
     ok: true,
     configured: true,
-    running: !!state.enabled && !state.finishedAt && !state.stoppedAt,
-    paused: !!state.pausedAt && !state.finishedAt,
+    running: !!state.enabled && !archived && !state.stoppedAt,
+    paused,
+    archived,
     mode: state.mode || (state.max != null ? "autobid" : "track"),
     listingId: state.listingId,
     title: state.title,
@@ -331,7 +356,18 @@ function publicState(state) {
     rarity: state.rarity || null,
     imageUrl: state.imageUrl || null,
     sellerName: state.sellerName || null,
-    result: state.result || null,
+    result:
+      state.result ||
+      (state.lastAction === "finished-won" ? "won" : null) ||
+      (
+        state.lastAction === "finished-lost" ||
+        (
+          archived &&
+          state.lastAction === "finished"
+        )
+          ? "lost"
+          : null
+      ),
     finalPrice:
       state.finalPrice !== null &&
       state.finalPrice !== undefined &&
@@ -366,9 +402,10 @@ function publicState(state) {
     pausedAt: state.pausedAt
       ? new Date(state.pausedAt).toISOString()
       : null,
-    finishedAt: state.finishedAt
-      ? new Date(state.finishedAt).toISOString()
-      : null,
+    finishedAt:
+      archived && state.finishedAt
+        ? new Date(state.finishedAt).toISOString()
+        : null,
     lastReadAt: state.lastReadAt
       ? new Date(state.lastReadAt).toISOString()
       : null,
@@ -708,8 +745,16 @@ export class AutoBidEngine extends DurableObject {
         return json({ ok: false, error: "No AutoBid configured." }, 404);
       }
 
-      if (state.finishedAt) {
+      const legacyCap =
+        state.lastAction === "cap-reached" ||
+        state.lastAction === "cap-reached-before-post";
+
+      if (state.finishedAt && !legacyCap) {
         return json({ ok: false, error: "Auction is already finished." }, 409);
+      }
+
+      if (legacyCap) {
+        state.finishedAt = null;
       }
 
       const mode = state.mode || (state.max != null ? "autobid" : "track");
@@ -1006,7 +1051,8 @@ export class AutoBidEngine extends DurableObject {
 
     if (amount > Number(state.max)) {
       state.enabled = false;
-      state.finishedAt = now;
+      state.pausedAt = now;
+      state.finishedAt = null;
       state.lastAction = "cap-reached";
       addEvent(state, {
         action: "cap-reached",
@@ -1057,7 +1103,8 @@ export class AutoBidEngine extends DurableObject {
 
     if (amount > Number(fresh.max)) {
       fresh.enabled = false;
-      fresh.finishedAt = Date.now();
+      fresh.pausedAt = Date.now();
+      fresh.finishedAt = null;
       fresh.lastAction = "cap-reached-before-post";
       addEvent(fresh, {
         action: "cap-reached-before-post",
