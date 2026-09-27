@@ -1358,10 +1358,33 @@ export default {
       const stub = userEngineStub(env, accountId, listingId);
 
       try {
-        const credentials = await resolveAccountCredentials(env, accountId);
-        const pricing = await probeCardPricing(credentials, {
-          listingId
-        });
+        const supplied = body.pricing;
+        const suppliedAverage =
+          supplied?.average === null ||
+          supplied?.average === undefined ||
+          supplied?.average === ""
+            ? NaN
+            : Number(supplied.average);
+
+        let pricing = null;
+
+        if (
+          supplied?.cardId &&
+          Number.isFinite(suppliedAverage)
+        ) {
+          pricing = {
+            cardId: String(supplied.cardId),
+            rarity: supplied.rarity
+              ? String(supplied.rarity).toUpperCase()
+              : null,
+            average: suppliedAverage
+          };
+        } else {
+          const credentials = await resolveAccountCredentials(env, accountId);
+          pricing = await probeCardPricing(credentials, {
+            listingId
+          });
+        }
 
         await stub.fetch(
           new Request("https://autobid.internal/reference", {
