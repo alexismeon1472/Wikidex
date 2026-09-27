@@ -537,8 +537,12 @@ export function renderAppHtml() {
   var TOKEN_KEY = "wikidexCloudToken";
   var token = localStorage.getItem(TOKEN_KEY) || sessionStorage.getItem(TOKEN_KEY) || "";
   var currentMe = null;
-  var currentTab = "market";
+  var requestedTab = new URLSearchParams(location.search).get("tab");
+  var allowedTabs = ["market","search","collection","wishlist","autobid","cleanup","settings"];
+  var currentTab = allowedTabs.includes(requestedTab) ? requestedTab : "market";
   var bidRefreshTimer = null;
+  var deferredInstallPrompt = null;
+  var serviceWorkerReady = null;
   var collectionPage = 0;
   var marketPage = 1;
   var marketRows = [];
@@ -581,6 +585,394 @@ export function renderAppHtml() {
     return data;
   }
 
+  function isStandaloneMode(){
+    return (
+      window.matchMedia &&
+      window.matchMedia("(display-mode: standalone)").matches
+    ) || window.navigator.standalone === true;
+  }
+
+  function isIosDevice(){
+    return /iphone|ipad|ipod/i.test(navigator.userAgent);
+  }
+
+  function setBadge(id,kind,text){
+    var node=el(id);
+    if(!node)return;
+    node.className="status "+(kind||"");
+    var textNode=node.querySelector("span:last-child");
+    if(textNode)textNode.textContent=text;
+  }
+
+  function updateInstallUi(){
+    var installed=isStandaloneMode();
+    var top=el("installAppTop");
+    var button=el("installApp");
+
+    if(installed){
+      if(top)top.classList.add("hidden");
+      if(button){
+        button.disabled=true;
+        button.textContent="WikiDex est installé";
+      }
+      setBadge("installBadge","good","Application installée");
+      if(el("installHelp")){
+        el("installHelp").textContent=
+          "WikiDex fonctionne en mode application autonome sur cet appareil.";
+      }
+      return;
+    }
+
+    if(top)top.classList.remove("hidden");
+    if(button){
+      button.disabled=false;
+      button.textContent="Installer l’application";
+    }
+
+    setBadge("installBadge","warn","Installation disponible");
+
+    if(el("installHelp")){
+      el("installHelp").textContent=isIosDevice()
+        ?"Sur iPhone/iPad : Safari → Partager → Sur l’écran d’accueil."
+        :"Installe WikiDex comme une application depuis le navigateur.";
+    }
+  }
+
+  async function registerPwa(){
+    if(!("serviceWorker" in navigator)){
+      updateInstallUi();
+      return null;
+    }
+
+    try{
+      serviceWorkerReady=navigator.serviceWorker
+        .register("/sw.js",{scope:"/"})
+        .then(function(){return navigator.serviceWorker.ready;});
+
+      var registration=await serviceWorkerReady;
+      updateInstallUi();
+      return registration;
+    }catch(e){
+      serviceWorkerReady=null;
+      setMsg("installMsg","Service Worker : "+e.message,"error");
+      updateInstallUi();
+      return null;
+    }
+  }
+
+  async function installWikiDex(){
+    setMsg("installMsg","");
+
+    if(isStandaloneMode()){
+      setMsg("installMsg","WikiDex est déjà installé sur cet appareil.","success");
+      return;
+    }
+
+    if(deferredInstallPrompt){
+      var prompt=deferredInstallPrompt;
+      deferredInstallPrompt=null;
+
+      await prompt.prompt();
+      var choice=await prompt.userChoice.catch(function(){
+        return {outcome:"dismissed"};
+      });
+
+      if(choice.outcome==="accepted"){
+        setMsg("installMsg","Installation de WikiDex lancée.","success");
+      }else{
+        setMsg("installMsg","Installation annulée.");
+      }
+
+      updateInstallUi();
+      return;
+    }
+
+    if(isIosDevice()){
+      setMsg(
+        "installMsg",
+        "Sur iPhone/iPad : ouvre WikiDex dans Safari, touche Partager, puis « Sur l’écran d’accueil ».",
+        "success"
+      );
+      return;
+    }
+
+    setMsg(
+      "installMsg",
+      "Utilise le bouton Installer de Chrome/Edge dans la barre d’adresse ou le menu du navigateur."
+    );
+  }
+
+  function base64UrlToUint8Array(value){
+    var s=String(value||"").replace(/-/g,"+").replace(/_/g,"/");
+    while(s.length%4)s+="=";
+    var raw=atob(s);
+    var out=new Uint8Array(raw.length);
+    for(var i=0;i<raw.length;i++)out[i]=raw.charCodeAt(i);
+    return out;
+  }
+
+  function arrayBufferToBase64Url(buffer){
+    var bytes=new Uint8Array(buffer);
+    var binary="";
+    for(var i=0;i<bytes.length;i++){
+      binary+=String.fromCharCode(bytes[i]);
+    }
+    return btoa(binary)
+      .replace(/\+/g,"-")
+      .replace(/\//g,"_")
+      .replace(/=+$/g,"");
+  }
+
+  function serializePushSubscription(subscription){
+    var p256dh=subscription.getKey("p256dh");
+    var auth=subscription.getKey("auth");
+
+    if(!p256dh||!auth){
+      throw new Error("Clés Web Push absentes.");
+    }
+
+    return {
+      endpoint:subscription.endpoint,
+      keys:{
+        p256dh:arrayBufferToBase64Url(p256dh),
+        auth:arrayBufferToBase64Url(auth)
+      }
+    };
+  }
+
+  function pushSupported(){
+    return (
+      "serviceWorker" in navigator &&
+      "PushManager" in window &&
+      "Notification" in window
+    );
+  }
+
+  async function currentPushSubscription(){
+    if(!pushSupported())return null;
+    var registration=
+      await (serviceWorkerReady||registerPwa());
+    if(!registration)return null;
+    return registration.pushManager.getSubscription();
+  }
+
+  function subscriptionUsesKey(subscription,key){
+    var bound=subscription&&subscription.options
+      ?subscription.options.applicationServerKey
+      :null;
+
+    if(!bound)return true;
+
+    var current=new Uint8Array(bound);
+    if(current.length!==key.length)return false;
+
+    for(var i=0;i<current.length;i++){
+      if(current[i]!==key[i])return false;
+    }
+
+    return true;
+  }
+
+  async function loadPushStatus(){
+    if(!token)return;
+
+    var enable=el("enablePush");
+    var disable=el("disablePush");
+    var test=el("testPush");
+
+    try{
+      var server=await api("/api/push/status");
+
+      if(!server.configured||!server.publicKey){
+        setBadge("pushBadge","warn","Push serveur à configurer");
+        if(enable)enable.disabled=true;
+        if(test)test.disabled=true;
+        if(disable)disable.disabled=true;
+        setMsg(
+          "pushMsg",
+          "Les clés VAPID ne sont pas encore configurées sur Cloudflare."
+        );
+        return;
+      }
+
+      if(!pushSupported()){
+        setBadge("pushBadge","warn","Non disponible dans ce navigateur");
+        if(enable)enable.disabled=true;
+        if(test)test.disabled=true;
+        if(disable)disable.disabled=true;
+
+        setMsg(
+          "pushMsg",
+          isIosDevice()&&!isStandaloneMode()
+            ?"Sur iPhone, installe d’abord WikiDex sur l’écran d’accueil puis ouvre l’application installée."
+            :"Ce navigateur ne fournit pas Web Push.",
+          "error"
+        );
+        return;
+      }
+
+      var subscription=await currentPushSubscription();
+      var permission=Notification.permission;
+
+      if(permission==="denied"){
+        setBadge("pushBadge","bad","Notifications bloquées");
+        if(enable)enable.disabled=true;
+        if(test)test.disabled=true;
+        if(disable)disable.disabled=!subscription;
+        setMsg(
+          "pushMsg",
+          "Les notifications sont bloquées dans les réglages du navigateur.",
+          "error"
+        );
+        return;
+      }
+
+      if(subscription){
+        setBadge(
+          "pushBadge",
+          "good",
+          "Notifications actives · "+
+          Math.max(1,Number(server.deviceCount)||1)+
+          " appareil(s)"
+        );
+        if(enable)enable.disabled=true;
+        if(disable)disable.disabled=false;
+        if(test)test.disabled=false;
+        setMsg("pushMsg","");
+      }else{
+        setBadge("pushBadge","warn","Notifications désactivées sur cet appareil");
+        if(enable)enable.disabled=false;
+        if(disable)disable.disabled=true;
+        if(test)test.disabled=true;
+        setMsg("pushMsg","");
+      }
+    }catch(e){
+      setBadge("pushBadge","bad","État indisponible");
+      setMsg("pushMsg",e.message,"error");
+    }
+  }
+
+  async function enablePushNotifications(){
+    setMsg("pushMsg","");
+
+    try{
+      var server=await api("/api/push/status");
+      if(!server.configured||!server.publicKey){
+        throw new Error("Web Push n’est pas encore configuré côté Cloudflare.");
+      }
+
+      if(!pushSupported()){
+        throw new Error(
+          isIosDevice()&&!isStandaloneMode()
+            ?"Installe d’abord WikiDex sur l’écran d’accueil de l’iPhone."
+            :"Web Push n’est pas pris en charge par ce navigateur."
+        );
+      }
+
+      var permission=Notification.permission;
+      if(permission==="default"){
+        permission=await Notification.requestPermission();
+      }
+
+      if(permission!=="granted"){
+        throw new Error("Autorisation de notifications refusée.");
+      }
+
+      var registration=
+        await (serviceWorkerReady||registerPwa());
+
+      if(!registration){
+        throw new Error("Service Worker indisponible.");
+      }
+
+      var key=base64UrlToUint8Array(server.publicKey);
+      var subscription=await registration.pushManager.getSubscription();
+
+      if(subscription&&!subscriptionUsesKey(subscription,key)){
+        await subscription.unsubscribe().catch(function(){});
+        subscription=null;
+      }
+
+      if(!subscription){
+        subscription=await registration.pushManager.subscribe({
+          userVisibleOnly:true,
+          applicationServerKey:key
+        });
+      }
+
+      await api("/api/push/subscribe",{
+        method:"POST",
+        body:JSON.stringify({
+          subscription:serializePushSubscription(subscription)
+        })
+      });
+
+      setMsg(
+        "pushMsg",
+        "Notifications activées sur cet appareil.",
+        "success"
+      );
+      await loadPushStatus();
+    }catch(e){
+      setMsg("pushMsg",e.message,"error");
+      await loadPushStatus().catch(function(){});
+    }
+  }
+
+  async function disablePushNotifications(){
+    setMsg("pushMsg","");
+
+    try{
+      var subscription=await currentPushSubscription();
+
+      if(subscription){
+        var endpoint=subscription.endpoint;
+        await subscription.unsubscribe().catch(function(){});
+
+        await api("/api/push/subscribe",{
+          method:"DELETE",
+          body:JSON.stringify({endpoint:endpoint})
+        });
+      }
+
+      setMsg(
+        "pushMsg",
+        "Notifications désactivées sur cet appareil.",
+        "success"
+      );
+      await loadPushStatus();
+    }catch(e){
+      setMsg("pushMsg",e.message,"error");
+    }
+  }
+
+  async function testPushNotification(){
+    setMsg("pushMsg","Envoi d’une notification de test…");
+
+    try{
+      var result=await api("/api/push/test",{
+        method:"POST",
+        body:JSON.stringify({})
+      });
+
+      if(!result.delivered){
+        throw new Error(
+          result.failed
+            ?"Le service Push a refusé la notification."
+            :"Aucun appareil Push actif trouvé."
+        );
+      }
+
+      setMsg(
+        "pushMsg",
+        "Notification envoyée.",
+        "success"
+      );
+    }catch(e){
+      setMsg("pushMsg",e.message,"error");
+    }
+  }
+
   function showLogin(){
     el("loginView").classList.remove("hidden");
     el("appView").classList.add("hidden");
@@ -605,6 +997,7 @@ export function renderAppHtml() {
     el("who").textContent=(me.account&&me.account.name)||"Compte WikiDex";
     updateSessionBadge(me.session);
     setTab(currentTab);
+    loadPushStatus().catch(function(){});
     if(bidRefreshTimer)clearInterval(bidRefreshTimer);
     bidRefreshTimer=setInterval(function(){
       if(currentTab==="autobid")loadBids(true);
@@ -644,6 +1037,10 @@ export function renderAppHtml() {
       loadMarket();
     }
     if(name==="autobid")loadBids();
+    if(name==="settings"){
+      updateInstallUi();
+      loadPushStatus().catch(function(){});
+    }
   }
 
   function clearNode(node){
@@ -2052,6 +2449,33 @@ export function renderAppHtml() {
   el("syncBids").addEventListener("click",syncBidsFromWikiMasters);
   el("refreshBids").addEventListener("click",function(){loadBids();});
 
+  el("installApp").addEventListener("click",installWikiDex);
+  el("installAppTop").addEventListener("click",installWikiDex);
+  el("enablePush").addEventListener("click",enablePushNotifications);
+  el("disablePush").addEventListener("click",disablePushNotifications);
+  el("testPush").addEventListener("click",testPushNotification);
+
+  window.addEventListener("beforeinstallprompt",function(event){
+    event.preventDefault();
+    deferredInstallPrompt=event;
+    updateInstallUi();
+  });
+
+  window.addEventListener("appinstalled",function(){
+    deferredInstallPrompt=null;
+    updateInstallUi();
+    setMsg("installMsg","WikiDex est installé.","success");
+  });
+
+  if(window.matchMedia){
+    var displayMode=window.matchMedia("(display-mode: standalone)");
+    if(displayMode.addEventListener){
+      displayMode.addEventListener("change",updateInstallUi);
+    }
+  }
+
+  registerPwa().catch(function(){});
+  updateInstallUi();
   loadMe();
 })();
 </script>
