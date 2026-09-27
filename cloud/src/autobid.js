@@ -115,6 +115,14 @@ function trackingPollDelayMs(auction, now = Date.now()) {
   if (remaining <= 5 * 60_000) return 30_000;
   return 60_000;
 }
+function archiveCheckAt(state, now = Date.now()) {
+  const end = Date.parse(state?.endAt || "");
+  if (!Number.isFinite(end)) return null;
+
+  if (end > now) return end + 2000;
+  return now + 2000;
+}
+
 
 function addEvent(state, event) {
   state.events = Array.isArray(state.events) ? state.events : [];
@@ -727,7 +735,10 @@ export class AutoBidEngine extends DurableObject {
       addEvent(state, { action: "paused-by-user" });
 
       await this.ctx.storage.put("autoBid", state);
-      await this.ctx.storage.deleteAlarm();
+
+      const checkAt = archiveCheckAt(state);
+      if (checkAt) await this.ctx.storage.setAlarm(checkAt);
+      else await this.ctx.storage.deleteAlarm();
 
       return json({
         ok: true,
@@ -891,7 +902,7 @@ export class AutoBidEngine extends DurableObject {
       await this.runCycle();
     } catch (error) {
       const state = await this.ctx.storage.get("autoBid").catch(() => null);
-      if (!state || !state.enabled || state.finishedAt || state.stoppedAt) return;
+      if (!state || state.finishedAt || state.stoppedAt) return;
 
       state.readErrors = (state.readErrors || 0) + 1;
       state.lastAction = "engine-error";
@@ -907,7 +918,101 @@ export class AutoBidEngine extends DurableObject {
 
   async runCycle() {
     let state = await this.ctx.storage.get("autoBid");
-    if (!state || !state.enabled || state.finishedAt || state.stoppedAt) return;
+    if (!state || state.finishedAt || state.stoppedAt) return;
+
+    const now = Date.now();
+
+    // Paused/cap-reached items do no regular polling. They wake once around
+    // the auction end only to classify the archive as won/lost.
+    if (!state.enabled) {
+      const end = Date.parse(state.endAt || "");
+
+      if (!Number.isFinite(end)) {
+        await this.ctx.storage.deleteAlarm();
+        return;
+      }
+
+      if (end > now) {
+        await this.ctx.storage.setAlarm(end + 2000);
+        return;
+      }
+
+      try {
+        const credentials = await resolveWikiCredentials(
+          this.env,
+          state.accountId || null
+        );
+        const auction = await fetchAuction(
+          credentials,
+          state.listingId
+        );
+
+        const currentBid = Number(
+          auction.current_bid ??
+          auction.currentBid ??
+          auction.base_amount ??
+          auction.baseAmount ??
+          state.currentBid ??
+          0
+        );
+
+        const currentBidderId =
+          auction.current_bidder_id ||
+          auction.currentBidderId ||
+          null;
+
+        state.title = auctionTitle(auction);
+        state.cardId = state.cardId || auctionCardId(auction);
+        state.rarity = state.rarity || auctionRarity(auction);
+        state.imageUrl = state.imageUrl || auctionImageUrl(auction);
+        state.sellerName = state.sellerName || auctionSellerName(auction);
+        state.currentBid = Number.isFinite(currentBid)
+          ? currentBid
+          : state.currentBid;
+        state.currentBidderId = currentBidderId;
+        state.status = auction.status || state.status || null;
+        state.lastReadAt = now;
+
+        if (isClosed(auction, now)) {
+          state.finishedAt = now;
+          state.result =
+            currentBidderId &&
+            String(currentBidderId) === String(state.userId)
+              ? "won"
+              : "lost";
+          state.finalPrice = Number(
+            auction.final_price ??
+            auction.finalPrice ??
+            state.currentBid
+          );
+          state.lastAction =
+            state.result === "won"
+              ? "finished-won"
+              : "finished-lost";
+
+          addEvent(state, {
+            action: state.lastAction,
+            currentBid: state.currentBid,
+            status: state.status,
+            reconciledWhilePaused: true
+          });
+
+          await this.ctx.storage.put("autoBid", state);
+          await this.ctx.storage.deleteAlarm();
+          return;
+        }
+
+        await this.ctx.storage.put("autoBid", state);
+        await this.ctx.storage.setAlarm(now + 60_000);
+      } catch (error) {
+        state.readErrors = (state.readErrors || 0) + 1;
+        state.lastAction = "paused-end-check-error";
+        await this.ctx.storage.put("autoBid", state);
+        await this.ctx.storage.setAlarm(now + 60_000);
+      }
+
+      return;
+    }
 
     const mode = state.mode || (state.max != null ? "autobid" : "track");
 
@@ -923,7 +1028,6 @@ export class AutoBidEngine extends DurableObject {
       return;
     }
 
-    const now = Date.now();
     let credentials;
     let auction;
 
@@ -1061,7 +1165,9 @@ export class AutoBidEngine extends DurableObject {
         max: state.max
       });
       await this.ctx.storage.put("autoBid", state);
-      await this.ctx.storage.deleteAlarm();
+      const checkAt = archiveCheckAt(state, now);
+      if (checkAt) await this.ctx.storage.setAlarm(checkAt);
+      else await this.ctx.storage.deleteAlarm();
       return;
     }
 
@@ -1112,7 +1218,9 @@ export class AutoBidEngine extends DurableObject {
         max: fresh.max
       });
       await this.ctx.storage.put("autoBid", fresh);
-      await this.ctx.storage.deleteAlarm();
+      const checkAt = archiveCheckAt(fresh);
+      if (checkAt) await this.ctx.storage.setAlarm(checkAt);
+      else await this.ctx.storage.deleteAlarm();
       return;
     }
 
