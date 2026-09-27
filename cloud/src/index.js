@@ -953,7 +953,18 @@ export default {
 
         const credentials = await resolveAccountCredentials(env, accountId);
         const results = [];
-        let consecutiveFailures = 0;
+        let consecutiveFailures = Number(plan.consecutiveFailures) || 0;
+
+        if (consecutiveFailures >= 3) {
+          return json({
+            ok: true,
+            complete: false,
+            processed: 0,
+            remaining: pending.length,
+            stoppedAfterFailures: true,
+            results: []
+          });
+        }
 
         for (const item of pending) {
           const userCardId = String(item.userCardId || "");
