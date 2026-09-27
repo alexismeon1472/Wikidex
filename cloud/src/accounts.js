@@ -363,7 +363,8 @@ export class UserAccount extends DurableObject {
         summary: body.summary || {},
         items: body.items.slice(0, 5000),
         attempted: {},
-        results: []
+        results: [],
+        consecutiveFailures: 0
       };
 
       await this.ctx.storage.put("cleanupPlan", plan);
@@ -389,7 +390,8 @@ export class UserAccount extends DurableObject {
           summary: plan.summary,
           items: plan.items,
           attempted: plan.attempted || {},
-          results: plan.results || []
+          results: plan.results || [],
+          consecutiveFailures: Number(plan.consecutiveFailures) || 0
         }
       });
     }
@@ -474,6 +476,13 @@ export class UserAccount extends DurableObject {
         ...current,
         ...result
       };
+
+      if (result.outcome === "accepted") {
+        plan.consecutiveFailures = 0;
+      } else {
+        plan.consecutiveFailures =
+          (Number(plan.consecutiveFailures) || 0) + 1;
+      }
 
       plan.results = Array.isArray(plan.results) ? plan.results : [];
       const oldIndex = plan.results.findIndex(
