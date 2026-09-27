@@ -310,7 +310,7 @@ export function renderAppHtml() {
           <div class="sectionHead">
             <div>
               <h2 style="margin-bottom:4px">Priorités wishlist</h2>
-              <div class="muted">Wishlist − cartes déjà possédées · meilleure enchère par carte · tri fin la plus proche puis prix le plus bas.</div>
+              <div class="muted">Wishlist · cartes déjà possédées exclues · meilleure enchère par carte · tri fin la plus proche puis prix le plus bas.</div>
             </div>
             <button id="scanPriorityMarket" class="btn primary">↻ Scanner ma wishlist</button>
           </div>
@@ -454,6 +454,13 @@ export function renderAppHtml() {
   var priorityRows = [];
   var priorityScanStarted = false;
   var priorityScanning = false;
+  var priorityStats = {
+    wishlistCount:0,
+    scannedListings:0,
+    wishlistListings:0,
+    ownedExcluded:0,
+    failedSegments:0
+  };
   var cleanupPlan = null;
 
   function el(id){ return document.getElementById(id); }
@@ -812,14 +819,16 @@ export function renderAppHtml() {
     });
   }
 
-  function renderPrioritySummary(data){
+  function renderPrioritySummary(){
     var root=el("prioritySummary");
     clearNode(root);
 
     [
-      ["Wishlist",data.wishlistCount],
-      ["Déjà possédées",Math.max(0,(data.wishlistCount||0)-(data.missingCount||0))],
-      ["À rechercher",data.missingCount]
+      ["Wishlist",priorityStats.wishlistCount],
+      ["Enchères lues",priorityStats.scannedListings],
+      ["Correspondances",priorityStats.wishlistListings],
+      ["Déjà possédées écartées",priorityStats.ownedExcluded],
+      ["Priorités",priorityRows.length]
     ].forEach(function(pair){
       var badge=document.createElement("span");
       badge.className="status";
@@ -828,16 +837,63 @@ export function renderAppHtml() {
     });
   }
 
+  function mergePriorityMatches(rows){
+    var byCard=new Map();
+
+    priorityRows.forEach(function(row){
+      var key=String(row.cardId||"");
+      if(key)byCard.set(key,row);
+    });
+
+    (Array.isArray(rows)?rows:[]).forEach(function(row){
+      var key=String(row.cardId||"");
+      if(!key)return;
+
+      var old=byCard.get(key);
+      if(!old){
+        byCard.set(key,Object.assign({},row,{alternatives:1}));
+        return;
+      }
+
+      var alternatives=(Number(old.alternatives)||1)+1;
+      var price=priorityPrice(row);
+      var oldPrice=priorityPrice(old);
+      var end=priorityEnd(row);
+      var oldEnd=priorityEnd(old);
+
+      if(price<oldPrice||(price===oldPrice&&end<oldEnd)){
+        byCard.set(
+          key,
+          Object.assign({},row,{alternatives:alternatives})
+        );
+      }else{
+        old.alternatives=alternatives;
+        byCard.set(key,old);
+      }
+    });
+
+    priorityRows=Array.from(byCard.values());
+    sortPriorityRows();
+  }
+
   async function scanPriorityMarket(){
     if(priorityScanning)return;
     priorityScanning=true;
     priorityScanStarted=true;
     priorityRows=[];
+    priorityStats={
+      wishlistCount:0,
+      scannedListings:0,
+      wishlistListings:0,
+      ownedExcluded:0,
+      failedSegments:0
+    };
+    renderPrioritySummary();
     renderPriorityMarket();
 
     var btn=el("scanPriorityMarket");
     if(btn)btn.disabled=true;
-    setMsg("priorityMsg","Préparation : wishlist − cartes déjà possédées…");
+    setMsg("priorityMsg","Lecture de la wishlist…");
 
     try{
       var start=await api("/api/marketplace/priority/start",{
@@ -845,67 +901,68 @@ export function renderAppHtml() {
         body:JSON.stringify({})
       });
 
-      renderPrioritySummary(start);
+      priorityStats.wishlistCount=Number(start.wishlistCount)||0;
+      renderPrioritySummary();
 
-      if(!start.missingCount){
-        setMsg(
-          "priorityMsg",
-          "Toutes les cartes de ta wishlist sont déjà dans ta collection.",
-          "success"
-        );
+      if(!priorityStats.wishlistCount){
+        setMsg("priorityMsg","Ta wishlist WikiMasters est vide.","success");
         return;
       }
 
       var offset=0;
-      var scannedListings=0;
-      var failedRequests=0;
+      var blocks=0;
+      var maxBlocks=250;
 
-      while(offset!==null){
+      while(offset!==null&&blocks<maxBlocks){
         setMsg(
           "priorityMsg",
-          "Recherche des enchères… "+Math.min(offset,start.missingCount)+
-            "/"+start.missingCount+" carte(s)"
+          "Scan du marché… bloc "+(blocks+1)+
+          " · "+priorityStats.scannedListings+" enchère(s) lue(s)"
         );
 
         var part=await api(
           "/api/marketplace/priority?scan="+
           encodeURIComponent(start.scanId)+
-          "&offset="+offset+
-          "&limit=20"
+          "&offset="+offset
         );
 
-        scannedListings+=Number(part.scannedListings)||0;
-        failedRequests+=Number(part.failedRequests)||0;
+        priorityStats.scannedListings+=Number(part.scannedListings)||0;
+        priorityStats.wishlistListings+=Number(part.wishlistListings)||0;
+        priorityStats.ownedExcluded+=Number(part.ownedExcluded)||0;
+        priorityStats.failedSegments+=Number(part.failedSegments)||0;
 
-        priorityRows=priorityRows.concat(
-          Array.isArray(part.suggestions)?part.suggestions:[]
-        );
-
-        var seen=new Set();
-        priorityRows=priorityRows.filter(function(row){
-          var key=String(row.cardId||row.listingId||"");
-          if(seen.has(key))return false;
-          seen.add(key);
-          return true;
-        });
-
-        sortPriorityRows();
+        mergePriorityMatches(part.matches);
+        renderPrioritySummary();
         renderPriorityMarket();
+
         offset=part.nextOffset;
+        blocks++;
+      }
+
+      var suffix="";
+      if(priorityStats.failedSegments){
+        suffix+=" · "+priorityStats.failedSegments+
+          " petit(s) segment(s) du marché n’ont pas pu être lus";
+      }
+      if(blocks>=maxBlocks&&offset!==null){
+        suffix+=" · scan arrêté à la limite de sécurité";
       }
 
       setMsg(
         "priorityMsg",
-        priorityRows.length+" carte(s) wishlist non possédée(s) trouvée(s) sur le marché"+
-          (failedRequests?" · "+failedRequests+" recherche(s) en erreur":"")+
-          ". Tri : fin la plus proche → prix le plus bas.",
-        failedRequests?"":"success"
+        priorityRows.length+
+          " carte(s) wishlist non possédée(s) actuellement trouvée(s) sur le marché. "+
+          "Pour chaque carte : prix le plus bas, puis fin la plus proche. "+
+          "Liste finale : fin la plus proche → prix le plus bas"+
+          suffix+".",
+        priorityStats.failedSegments?"":"success"
       );
     }catch(e){
       setMsg("priorityMsg",e.message,"error");
     }finally{
       priorityScanning=false;
       if(btn)btn.disabled=false;
+      renderPrioritySummary();
       renderPriorityMarket();
     }
   }
