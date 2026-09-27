@@ -85,20 +85,25 @@ function hasAttemptKey(state, key) {
   return Array.isArray(state.attemptedKeys) && state.attemptedKeys.includes(key);
 }
 
-function wikiHeaders(env, withJsonBody = false) {
+function wikiHeaders(credentials, withJsonBody = false) {
   const headers = new Headers({
     accept: "application/json, text/plain, */*",
     origin: "https://www.wiki-masters.com",
     referer: "https://www.wiki-masters.com/marketplace"
   });
 
-  if (env.WIKIMASTERS_COOKIE) {
-    headers.set("cookie", env.WIKIMASTERS_COOKIE);
-  }
+  const cookie =
+    credentials?.cookie ||
+    credentials?.WIKIMASTERS_COOKIE ||
+    "";
 
-  if (env.WIKIMASTERS_AUTHORIZATION) {
-    headers.set("authorization", env.WIKIMASTERS_AUTHORIZATION);
-  }
+  const authorization =
+    credentials?.authorization ||
+    credentials?.WIKIMASTERS_AUTHORIZATION ||
+    "";
+
+  if (cookie) headers.set("cookie", cookie);
+  if (authorization) headers.set("authorization", authorization);
 
   if (withJsonBody) {
     headers.set("content-type", "application/json");
@@ -107,13 +112,13 @@ function wikiHeaders(env, withJsonBody = false) {
   return headers;
 }
 
-async function fetchAuction(env, listingId) {
+async function fetchAuction(credentials, listingId) {
   const response = await fetch(
     "https://www.wiki-masters.com/api/marketplace/" +
       encodeURIComponent(listingId),
     {
       method: "GET",
-      headers: wikiHeaders(env),
+      headers: wikiHeaders(credentials),
       redirect: "manual"
     }
   );
@@ -136,7 +141,7 @@ async function fetchAuction(env, listingId) {
   return auction;
 }
 
-async function fetchUserId(env) {
+async function fetchUserId(credentials) {
   const url = new URL("https://www.wiki-masters.com/api/my-collection");
   url.searchParams.set("sort", "rarity");
   url.searchParams.set("rarity", "C");
@@ -145,7 +150,7 @@ async function fetchUserId(env) {
 
   const response = await fetch(url.toString(), {
     method: "GET",
-    headers: wikiHeaders(env),
+    headers: wikiHeaders(credentials),
     redirect: "manual"
   });
 
@@ -169,7 +174,7 @@ async function fetchUserId(env) {
   return String(userId);
 }
 
-async function postBidOnce(env, listingId, amount) {
+async function postBidOnce(credentials, listingId, amount) {
   // CRITICAL INVARIANT:
   // This function performs exactly one state-changing request.
   // The caller must never automatically retry an ambiguous result.
@@ -182,7 +187,7 @@ async function postBidOnce(env, listingId, amount) {
         "/bid",
       {
         method: "POST",
-        headers: wikiHeaders(env, true),
+        headers: wikiHeaders(credentials, true),
         body: JSON.stringify({ amount }),
         redirect: "manual"
       }
@@ -221,6 +226,38 @@ async function postBidOnce(env, listingId, amount) {
     httpStatus: response.status,
     balance: Number.isFinite(balance) ? balance : null
   };
+}
+
+async function resolveWikiCredentials(env, accountId) {
+  if (!accountId) {
+    const credentials = {
+      cookie: env.WIKIMASTERS_COOKIE || "",
+      authorization: env.WIKIMASTERS_AUTHORIZATION || ""
+    };
+
+    if (!credentials.cookie && !credentials.authorization) {
+      throw new Error("WikiMasters credentials are not configured.");
+    }
+
+    return credentials;
+  }
+
+  if (!env.USER_ACCOUNT) {
+    throw new Error("USER_ACCOUNT binding is not configured.");
+  }
+
+  const stub = env.USER_ACCOUNT.get(
+    env.USER_ACCOUNT.idFromName(String(accountId))
+  );
+
+  const response = await stub.fetch("https://account.internal/credentials");
+  const data = await response.json().catch(() => null);
+
+  if (!response.ok || !data?.credentials) {
+    throw new Error(data?.error || "WikiMasters session is not connected.");
+  }
+
+  return data.credentials;
 }
 
 function publicState(state) {
@@ -318,15 +355,22 @@ export class AutoBidEngine extends DurableObject {
         return json({ ok: false, error: "Invalid max amount." }, 400);
       }
 
-      if (!this.env.WIKIMASTERS_COOKIE && !this.env.WIKIMASTERS_AUTHORIZATION) {
+      const accountId = body.accountId
+        ? String(body.accountId)
+        : null;
+
+      let credentials;
+      try {
+        credentials = await resolveWikiCredentials(this.env, accountId);
+      } catch (error) {
         return json({
           ok: false,
-          error: "WikiMasters credentials are not configured."
+          error: error?.message || String(error)
         }, 503);
       }
 
-      const userId = await fetchUserId(this.env);
-      const auction = await fetchAuction(this.env, listingId);
+      const userId = await fetchUserId(credentials);
+      const auction = await fetchAuction(credentials, listingId);
       const now = Date.now();
 
       if (isClosed(auction, now)) {
@@ -345,7 +389,8 @@ export class AutoBidEngine extends DurableObject {
       }
 
       const state = {
-        schemaVersion: 1,
+        schemaVersion: 2,
+        accountId,
         listingId,
         max,
         userId,
@@ -482,10 +527,12 @@ export class AutoBidEngine extends DurableObject {
     }
 
     const now = Date.now();
+    let credentials;
     let auction;
 
     try {
-      auction = await fetchAuction(this.env, state.listingId);
+      credentials = await resolveWikiCredentials(this.env, state.accountId || null);
+      auction = await fetchAuction(credentials, state.listingId);
       state.lastReadAt = now;
       state.readErrors = 0;
     } catch (error) {
@@ -672,7 +719,7 @@ export class AutoBidEngine extends DurableObject {
     // ambiguous because of a timeout/network failure.
     await this.ctx.storage.put("autoBid", fresh);
 
-    const result = await postBidOnce(this.env, fresh.listingId, amount);
+    const result = await postBidOnce(credentials, fresh.listingId, amount);
 
     // Merge the result into the newest state so a concurrent stop/max update is
     // not overwritten by this alarm.
