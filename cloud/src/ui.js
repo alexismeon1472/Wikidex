@@ -5,7 +5,14 @@ export function renderAppHtml() {
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width,initial-scale=1">
   <meta name="theme-color" content="#0b1020">
-  <title>WikiDex Cloud</title>
+  <meta name="mobile-web-app-capable" content="yes">
+  <meta name="apple-mobile-web-app-capable" content="yes">
+  <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+  <meta name="apple-mobile-web-app-title" content="WikiDex">
+  <link rel="manifest" href="/manifest.webmanifest">
+  <link rel="icon" type="image/png" sizes="192x192" href="/icons/icon-192.png">
+  <link rel="apple-touch-icon" sizes="192x192" href="/icons/icon-192.png">
+  <title>WikiDex</title>
   <style>
     :root{
       color-scheme:dark;
@@ -229,6 +236,7 @@ export function renderAppHtml() {
     </div>
     <div class="row">
       <span id="who" class="muted"></span>
+      <button id="installAppTop" class="btn primary hidden">Installer WikiDex</button>
       <button id="logout" class="btn ghost hidden">Déconnexion</button>
     </div>
   </header>
@@ -494,6 +502,30 @@ export function renderAppHtml() {
             Sans elle, la clé reste seulement pour la session du navigateur.
           </p>
           <button id="settingsLogout" class="btn danger">Déconnecter WikiDex</button>
+        </div>
+
+        <div class="card span6">
+          <h2>Installer WikiDex</h2>
+          <div id="installBadge" class="status"><span class="dot"></span><span>Vérification…</span></div>
+          <p id="installHelp" class="muted" style="margin-top:12px">
+            Installe WikiDex comme une application sur iPhone, Android ou PC.
+          </p>
+          <button id="installApp" class="btn primary">Installer l’application</button>
+          <div id="installMsg" class="msg"></div>
+        </div>
+
+        <div class="card span6">
+          <h2>Notifications</h2>
+          <div id="pushBadge" class="status"><span class="dot"></span><span>Vérification…</span></div>
+          <p class="muted" style="margin-top:12px">
+            Notifications natives pour les surenchères, plafonds atteints et résultats d’enchères, même lorsque WikiDex est fermé.
+          </p>
+          <div class="row">
+            <button id="enablePush" class="btn primary">Activer</button>
+            <button id="testPush" class="btn ghost">Tester</button>
+            <button id="disablePush" class="btn danger">Désactiver</button>
+          </div>
+          <div id="pushMsg" class="msg"></div>
         </div>
       </div>
     </div>
