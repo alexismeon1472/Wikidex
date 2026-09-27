@@ -787,6 +787,137 @@ export function renderAppHtml() {
     return Number.isNaN(d.getTime())?String(value):d.toLocaleString("fr-FR");
   }
 
+  function clearAutoBidDraft(){
+    autoBidDraft=null;
+    el("autobidDraftPreview").classList.add("hidden");
+    clearNode(el("autobidDraftImageWrap"));
+    el("autobidDraftTitle").textContent="Carte";
+    el("autobidDraftMeta").textContent="";
+  }
+
+  function setAutoBidDraft(row){
+    if(!row){
+      clearAutoBidDraft();
+      return;
+    }
+
+    autoBidDraft=Object.assign({},row);
+    var preview=el("autobidDraftPreview");
+    var imageWrap=el("autobidDraftImageWrap");
+    clearNode(imageWrap);
+
+    var imageUrl=row.imageUrl||row.image||"";
+    if(imageUrl){
+      var img=document.createElement("img");
+      img.src=imageUrl;
+      img.alt="";
+      img.loading="lazy";
+      img.referrerPolicy="no-referrer";
+      imageWrap.appendChild(img);
+    }else{
+      var placeholder=document.createElement("div");
+      placeholder.className="auctionThumbPlaceholder";
+      placeholder.style.width="66px";
+      placeholder.style.height="88px";
+      placeholder.textContent=row.rarity||"Carte";
+      imageWrap.appendChild(placeholder);
+    }
+
+    el("autobidDraftTitle").textContent=row.title||"Enchère WikiMasters";
+
+    var meta=[];
+    if(row.rarity)meta.push(String(row.rarity));
+    if(
+      row.currentBid!==null &&
+      row.currentBid!==undefined &&
+      Number.isFinite(Number(row.currentBid))
+    ){
+      meta.push("actuelle "+Number(row.currentBid)+" WB");
+    }
+    if(row.endAt)meta.push("fin "+formatEnd(row.endAt));
+    if(row.sellerName)meta.push("vendu par "+row.sellerName);
+
+    el("autobidDraftMeta").textContent=meta.join(" · ");
+    preview.classList.remove("hidden");
+  }
+
+  function setPricingDisplay(data){
+    pricingProbe=data||null;
+
+    if(
+      data &&
+      data.average!==null &&
+      data.average!==undefined &&
+      data.average!=="" &&
+      Number.isFinite(Number(data.average))
+    ){
+      var value=Number(data.average);
+      el("pricingValue").textContent=value+" Wikibidous";
+      el("pricingMeta").textContent=
+        (data.rarity?data.rarity+" · ":"")+
+        "moyenne des ventes WikiMasters";
+      el("pricingActions").classList.remove("hidden");
+      return true;
+    }
+
+    el("pricingActions").classList.add("hidden");
+
+    if(data){
+      el("pricingValue").textContent="Moyenne indisponible";
+      el("pricingMeta").textContent=
+        Array.isArray(data.averages)&&data.averages.length
+          ? "Moyennes disponibles : "+
+            data.averages.map(function(x){
+              return x.rarity+"="+x.average;
+            }).join(" · ")
+          : "Aucune moyenne renvoyée par WikiMasters pour cette carte.";
+    }else{
+      el("pricingValue").textContent="Non recherchée";
+      el("pricingMeta").textContent="";
+    }
+
+    return false;
+  }
+
+  function prepareAutoBidFromAuction(row){
+    el("listing").value=row.listingId||"";
+
+    var base=Number(row.currentBid);
+    if(Number.isFinite(base)){
+      el("max").value=String(
+        Math.max(Math.ceil(base*1.1),Math.floor(base)+1)
+      );
+    }
+
+    setAutoBidDraft(row);
+
+    if(
+      row.average!==null &&
+      row.average!==undefined &&
+      row.average!=="" &&
+      Number.isFinite(Number(row.average))
+    ){
+      setPricingDisplay({
+        average:Number(row.average),
+        rarity:row.rarity||null,
+        title:row.title||null,
+        imageUrl:row.imageUrl||row.image||null,
+        currentBid:row.currentBid,
+        endAt:row.endAt,
+        sellerName:row.sellerName||null
+      });
+    }else{
+      setPricingDisplay(null);
+    }
+
+    setTab("autobid");
+    el("max").focus();
+
+    if(!pricingProbe){
+      probeAutoBidPricing();
+    }
+  }
+
   function priorityPrice(row){
     var values=[row.effectiveBid,row.currentBid,row.baseAmount]
       .map(Number)
@@ -855,16 +986,7 @@ export function renderAppHtml() {
       auto.className="btn primary small";
       auto.textContent="AutoBid";
       auto.addEventListener("click",function(){
-        el("listing").value=row.listingId;
-        var base=Number(row.currentBid);
-        if(Number.isFinite(base)){
-          el("max").value=String(
-            Math.max(Math.ceil(base*1.1),Math.floor(base)+1)
-          );
-        }
-        setTab("autobid");
-        el("max").focus();
-        probeAutoBidPricing();
+        prepareAutoBidFromAuction(row);
       });
       actions.appendChild(auto);
 
@@ -1081,12 +1203,7 @@ export function renderAppHtml() {
       auto.className="btn primary small";
       auto.textContent="AutoBid";
       auto.addEventListener("click",function(){
-        el("listing").value=row.listingId;
-        var base=Number(row.currentBid);
-        if(Number.isFinite(base))el("max").value=String(Math.max(Math.ceil(base*1.1),Math.floor(base)+1));
-        setTab("autobid");
-        el("max").focus();
-        probeAutoBidPricing();
+        prepareAutoBidFromAuction(row);
       });
       actions.appendChild(auto);
 
@@ -1286,41 +1403,27 @@ export function renderAppHtml() {
         "/api/pricing/probe?listing="+encodeURIComponent(listing)
       );
 
-      pricingProbe=data;
+      setPricingDisplay(data);
 
-      if(
-        data.average!==null &&
-        data.average!==undefined &&
-        data.average!=="" &&
-        Number.isFinite(Number(data.average))
-      ){
-        var value=Number(data.average);
-        el("pricingValue").textContent=value+" Wikibidous";
-        el("pricingMeta").textContent=
-          (data.rarity?data.rarity+" · ":"")+
-          "moyenne des ventes WikiMasters";
-        el("pricingActions").classList.remove("hidden");
-        return;
-      }
-
-      el("pricingValue").textContent="Moyenne indisponible";
-
-      if(Array.isArray(data.averages)&&data.averages.length){
-        el("pricingMeta").textContent=
-          "Moyennes disponibles : "+
-          data.averages.map(function(x){
-            return x.rarity+"="+x.average;
-          }).join(" · ");
-      }else{
-        el("pricingMeta").textContent=
-          "Aucune moyenne renvoyée par WikiMasters pour cette carte.";
-      }
+      setAutoBidDraft({
+        listingId:listing,
+        title:data.title||(autoBidDraft&&autoBidDraft.title)||"Enchère WikiMasters",
+        rarity:data.rarity||(autoBidDraft&&autoBidDraft.rarity)||"",
+        imageUrl:data.imageUrl||(autoBidDraft&&(
+          autoBidDraft.imageUrl||autoBidDraft.image
+        ))||"",
+        currentBid:
+          data.currentBid!==null&&data.currentBid!==undefined
+            ?data.currentBid
+            :(autoBidDraft&&autoBidDraft.currentBid),
+        endAt:data.endAt||(autoBidDraft&&autoBidDraft.endAt)||null,
+        sellerName:data.sellerName||(autoBidDraft&&autoBidDraft.sellerName)||""
+      });
     }catch(e){
       el("pricingValue").textContent="Recherche impossible";
       el("pricingMeta").textContent=e.message;
     }
   }
-
 
   function statusLabel(bid){
     if(bid.finishedAt){
