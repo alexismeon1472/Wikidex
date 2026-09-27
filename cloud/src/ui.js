@@ -1960,7 +1960,19 @@ export function renderAppHtml() {
         body:JSON.stringify({
           listing:listing,
           max:max,
-          confirm:"REAL_BIDS"
+          confirm:"REAL_BIDS",
+          pricing:
+            pricingProbe
+              ?{
+                  cardId:pricingProbe.cardId||null,
+                  rarity:pricingProbe.rarity||null,
+                  average:
+                    pricingProbe.average!==null &&
+                    pricingProbe.average!==undefined
+                      ?pricingProbe.average
+                      :null
+                }
+              :null
         })
       });
       el("listing").value="";
