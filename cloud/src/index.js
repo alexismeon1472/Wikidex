@@ -1,5 +1,7 @@
 import { DurableObject } from "cloudflare:workers";
 import { renderAppHtml } from "./ui.js";
+import { manifestResponse, serviceWorkerResponse, iconResponse } from "./pwa.js";
+import { pushConfigured, pushPublicKey, sendUserPush } from "./push.js";
 import { resolveAccountCredentials, searchCards, collectionPage, marketplacePage, getWishlist, addWishlistCard, buildPriorityMarketSnapshot, scanPriorityMarketChunk, analyzeCommonCleanup, discardUserCardOnce, probeCardPricing, discoverMyActiveBids } from "./wikimasters.js";
 export { AutoBidEngine } from "./autobid.js";
 export { UserRegistry, UserAccount } from "./accounts.js";
@@ -60,6 +62,7 @@ function htmlResponse() {
         "style-src 'self' 'unsafe-inline'; " +
         "connect-src 'self'; " +
         "img-src 'self' data: https:; " +
+        "worker-src 'self'; manifest-src 'self'; " +
         "frame-ancestors 'none'; base-uri 'none'; form-action 'self'"
     }
   });
@@ -568,6 +571,34 @@ export default {
   async fetch(request, env) {
     const url = new URL(request.url);
 
+    if (
+      url.pathname === "/manifest.webmanifest" &&
+      request.method === "GET"
+    ) {
+      return manifestResponse();
+    }
+
+    if (
+      url.pathname === "/sw.js" &&
+      request.method === "GET"
+    ) {
+      return serviceWorkerResponse();
+    }
+
+    if (
+      url.pathname === "/icons/icon-192.png" &&
+      request.method === "GET"
+    ) {
+      return iconResponse(192);
+    }
+
+    if (
+      url.pathname === "/icons/icon-512.png" &&
+      request.method === "GET"
+    ) {
+      return iconResponse(512);
+    }
+
     if (url.pathname === "/" && request.method === "GET") {
       return htmlResponse();
     }
@@ -617,6 +648,130 @@ export default {
         account: auth.account,
         session
       });
+    }
+
+    if (
+      url.pathname === "/api/push/status" &&
+      request.method === "GET"
+    ) {
+      const auth = await authenticateUser(request, env);
+      if (auth.error) return auth.error;
+
+      const response = await userAccountStub(
+        env,
+        auth.account.accountId
+      ).fetch("https://account.internal/push/status");
+
+      const data = await response.json().catch(() => null);
+
+      return json({
+        ok: true,
+        configured: pushConfigured(env),
+        publicKey: pushPublicKey(env),
+        enabled: !!data?.enabled,
+        deviceCount: Number(data?.count) || 0
+      });
+    }
+
+    if (
+      url.pathname === "/api/push/subscribe" &&
+      request.method === "POST"
+    ) {
+      const auth = await authenticateUser(request, env);
+      if (auth.error) return auth.error;
+
+      let body = {};
+      try { body = await request.json(); } catch {}
+
+      const response = await userAccountStub(
+        env,
+        auth.account.accountId
+      ).fetch(
+        new Request(
+          "https://account.internal/push/subscriptions",
+          {
+            method: "POST",
+            headers: { "content-type": "application/json" },
+            body: JSON.stringify({
+              subscription: body.subscription || body
+            })
+          }
+        )
+      );
+
+      return new Response(response.body, {
+        status: response.status,
+        headers: JSON_HEADERS
+      });
+    }
+
+    if (
+      url.pathname === "/api/push/subscribe" &&
+      request.method === "DELETE"
+    ) {
+      const auth = await authenticateUser(request, env);
+      if (auth.error) return auth.error;
+
+      let body = {};
+      try { body = await request.json(); } catch {}
+
+      const response = await userAccountStub(
+        env,
+        auth.account.accountId
+      ).fetch(
+        new Request(
+          "https://account.internal/push/subscriptions",
+          {
+            method: "DELETE",
+            headers: { "content-type": "application/json" },
+            body: JSON.stringify({
+              endpoint: body.endpoint || null
+            })
+          }
+        )
+      );
+
+      return new Response(response.body, {
+        status: response.status,
+        headers: JSON_HEADERS
+      });
+    }
+
+    if (
+      url.pathname === "/api/push/test" &&
+      request.method === "POST"
+    ) {
+      const auth = await authenticateUser(request, env);
+      if (auth.error) return auth.error;
+
+      const result = await sendUserPush(
+        env,
+        auth.account.accountId,
+        {
+          title: "WikiDex",
+          body: "Les notifications fonctionnent sur cet appareil.",
+          icon: "/icons/icon-192.png",
+          badge: "/icons/icon-192.png",
+          tag: "wikidex-test",
+          data: {
+            url: "/?tab=autobid"
+          },
+          timestamp: Date.now()
+        },
+        {
+          urgency: "normal",
+          topic: "wikidex-test",
+          ttl: 300
+        }
+      );
+
+      return json({
+        ok: result.ok,
+        configured: result.configured,
+        delivered: result.delivered,
+        gone: result.gone,
+        failed: result.failed
+      }, result.configured ? 200 : 503);
     }
 
     if (url.pathname === "/api/session") {
