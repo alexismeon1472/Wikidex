@@ -17,6 +17,14 @@
       {
         "name": "AUTOBID_ENGINE",
         "class_name": "AutoBidEngine"
+      },
+      {
+        "name": "USER_REGISTRY",
+        "class_name": "UserRegistry"
+      },
+      {
+        "name": "USER_ACCOUNT",
+        "class_name": "UserAccount"
       }
     ]
   },
@@ -37,6 +45,13 @@
       "tag": "v3",
       "new_sqlite_classes": [
         "AutoBidEngine"
+      ]
+    },
+    {
+      "tag": "v4",
+      "new_sqlite_classes": [
+        "UserRegistry",
+        "UserAccount"
       ]
     }
   ]
