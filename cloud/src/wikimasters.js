@@ -163,25 +163,62 @@ async function readJson(response) {
   return { text, data };
 }
 
+async function sleep(ms) {
+  return new Promise(resolve => setTimeout(resolve, ms));
+}
+
 async function wikiGet(credentials, url) {
-  const response = await fetch(url, {
-    method: "GET",
-    headers: credentialsHeaders(credentials),
-    redirect: "manual"
-  });
+  const target = new URL(url);
+  const retryDelays = [0, 450, 1200];
+  let lastStatus = 0;
+  let lastContentType = "";
+  let lastNetworkError = "";
 
-  const { text, data } = await readJson(response);
+  for (let attempt = 0; attempt < retryDelays.length; attempt++) {
+    if (retryDelays[attempt]) {
+      await sleep(retryDelays[attempt]);
+    }
 
-  if (!response.ok) {
+    let response;
+    try {
+      response = await fetch(url, {
+        method: "GET",
+        headers: credentialsHeaders(credentials),
+        redirect: "manual"
+      });
+    } catch (error) {
+      lastNetworkError = error?.message || String(error);
+      continue;
+    }
+
+    lastStatus = response.status;
+    lastContentType = response.headers.get("content-type") || "";
+    const { data } = await readJson(response);
+
+    if (response.ok) return data;
+
+    if (![429, 500, 502, 503, 504].includes(response.status)) {
+      break;
+    }
+  }
+
+  if (!lastStatus) {
     throw new Error(
-      "WikiMasters GET failed (HTTP " +
-        response.status +
-        ")" +
-        (text ? ": " + text.slice(0, 160) : "")
+      "WikiMasters GET " + target.pathname +
+      " impossible (erreur réseau" +
+      (lastNetworkError ? ": " + lastNetworkError : "") +
+      ")."
     );
   }
 
-  return data;
+  const kind = /html/i.test(lastContentType)
+    ? ", réponse HTML"
+    : "";
+
+  throw new Error(
+    "WikiMasters GET " + target.pathname +
+    " impossible (HTTP " + lastStatus + kind + ")."
+  );
 }
 
 export async function resolveAccountCredentials(env, accountId) {
@@ -741,6 +778,9 @@ export async function getAllOwnedCards(credentials, {
     // Same guard as the extension: if the endpoint repeats a page,
     // stop instead of looping forever.
     if (!added) break;
+
+    // Avoid hammering WikiMasters when a collection spans many pages.
+    await sleep(90);
   }
 
   return {
@@ -752,129 +792,196 @@ export async function getAllOwnedCards(credentials, {
 }
 
 export async function buildPriorityMarketSnapshot(credentials) {
-  const [wishlist, owned] = await Promise.all([
-    getWishlist(credentials),
-    getAllOwnedCards(credentials)
-  ]);
-
-  const ownedCardIds = new Set(
-    owned.items
-      .map(card => normalizeId(card.cardId))
-      .filter(Boolean)
-  );
-
-  const missingCards = wishlist.cards
-    .filter(card => {
-      const id = normalizeId(card.id);
-      return id && !ownedCardIds.has(id);
-    })
-    .map(card => ({
-      id: normalizeId(card.id),
-      title: String(card.title || "Carte"),
-      rarity: String(card.rarity || "")
-    }));
+  const wishlist = await getWishlist(credentials);
 
   return {
     scanId: crypto.randomUUID(),
     createdAt: Date.now(),
     userId: wishlist.userId,
     wishlistCount: wishlist.count,
-    ownedUniqueCount: ownedCardIds.size,
-    missingCount: missingCards.length,
-    missingCards
+    wishlistCardIds: wishlist.cardIds
+      .map(normalizeId)
+      .filter(Boolean)
   };
 }
 
-async function marketplaceSearchByTitle(credentials, card, userId) {
+async function requestMarketplacePage(credentials, page, limit) {
   const url = new URL("https://www.wiki-masters.com/api/marketplace");
-  url.searchParams.set("page", "1");
-  url.searchParams.set("limit", "50");
+  url.searchParams.set("page", String(page));
+  url.searchParams.set("limit", String(limit));
   url.searchParams.set("sort", "recent");
-  url.searchParams.set("q", String(card.title || ""));
 
-  const data = await wikiGet(credentials, url.toString());
-  const rawRows = Array.isArray(data?.auctions) ? data.auctions : [];
-  const now = Date.now();
+  const retryDelays = [0, 500, 1400];
+  let last = null;
 
-  const rows = rawRows
-    .map(normalizeAuction)
-    .filter(auction => {
-      if (!auction.listingId) return false;
-      if (normalizeId(auction.cardId) !== normalizeId(card.id)) return false;
-      if (String(auction.status || "").toLowerCase() !== "active") return false;
-      if (userId && String(auction.sellerId) === String(userId)) return false;
+  for (let attempt = 0; attempt < retryDelays.length; attempt++) {
+    if (retryDelays[attempt]) await sleep(retryDelays[attempt]);
 
-      const end = listingEndMs(auction);
-      if (Number.isFinite(end) && end <= now) return false;
+    try {
+      const response = await fetch(url.toString(), {
+        method: "GET",
+        headers: credentialsHeaders(credentials),
+        redirect: "manual"
+      });
 
-      return true;
-    });
+      const contentType = response.headers.get("content-type") || "";
+      const { data } = await readJson(response);
 
-  let best = null;
-  for (const auction of rows) {
-    if (!best) {
-      best = { ...auction, alternatives: rows.length };
-      continue;
-    }
+      last = {
+        ok: response.ok,
+        status: response.status,
+        contentType,
+        data
+      };
 
-    const price = listingPrice(auction);
-    const bestPrice = listingPrice(best);
-    const end = listingEndMs(auction);
-    const bestEnd = listingEndMs(best);
-
-    // Exact extension behavior: cheapest auction for that card,
-    // earliest ending auction as tie-breaker.
-    if (price < bestPrice || (price === bestPrice && end < bestEnd)) {
-      best = { ...auction, alternatives: rows.length };
+      if (response.ok) return last;
+      if (![429, 500, 502, 503, 504].includes(response.status)) return last;
+    } catch (error) {
+      last = {
+        ok: false,
+        status: 0,
+        contentType: "",
+        data: null,
+        error: error?.message || String(error)
+      };
     }
   }
 
+  return last || {
+    ok: false,
+    status: 0,
+    contentType: "",
+    data: null
+  };
+}
+
+async function fetchMarketplaceSegment(credentials, offset, size) {
+  if (offset % size !== 0) {
+    return {
+      ok: false,
+      rows: [],
+      hasMore: true,
+      failedSegments: 1,
+      recovered: false
+    };
+  }
+
+  const page = offset / size + 1;
+  const result = await requestMarketplacePage(credentials, page, size);
+
+  if (result?.ok) {
+    const rows = Array.isArray(result.data?.auctions)
+      ? result.data.auctions
+      : [];
+
+    return {
+      ok: true,
+      rows,
+      hasMore: !!result.data?.hasMore,
+      failedSegments: 0,
+      recovered: false
+    };
+  }
+
+  let childSize = null;
+  if (size === 50) childSize = 25;
+  else if (size === 25) childSize = 5;
+
+  if (childSize) {
+    const rows = [];
+    let hasMore = true;
+    let failedSegments = 0;
+
+    for (
+      let childOffset = offset;
+      childOffset < offset + size;
+      childOffset += childSize
+    ) {
+      const part = await fetchMarketplaceSegment(
+        credentials,
+        childOffset,
+        childSize
+      );
+
+      rows.push(...(part.rows || []));
+      hasMore = part.hasMore;
+      failedSegments += Number(part.failedSegments) || 0;
+    }
+
+    return {
+      ok: true,
+      rows,
+      hasMore,
+      failedSegments,
+      recovered: true
+    };
+  }
+
   return {
-    scanned: rawRows.length,
-    suggestion: best
+    ok: true,
+    rows: [],
+    hasMore: true,
+    failedSegments: 1,
+    recovered: false
   };
 }
 
 export async function scanPriorityMarketChunk(credentials, {
-  cards = [],
-  userId = null
+  wishlistCardIds = [],
+  userId = null,
+  offset = 0
 } = {}) {
-  const selected = Array.isArray(cards) ? cards.slice(0, 20) : [];
-  const suggestions = [];
-  let scanned = 0;
-  let failed = 0;
-
-  // Keep outbound concurrency modest. This also keeps each Worker invocation
-  // comfortably below subrequest/concurrency limits.
-  for (let i = 0; i < selected.length; i += 5) {
-    const batch = selected.slice(i, i + 5);
-    const results = await Promise.allSettled(
-      batch.map(card => marketplaceSearchByTitle(credentials, card, userId))
-    );
-
-    for (const result of results) {
-      if (result.status === "fulfilled") {
-        scanned += result.value.scanned || 0;
-        if (result.value.suggestion) suggestions.push(result.value.suggestion);
-      } else {
-        failed++;
-      }
-    }
-  }
-
-  // Exact display priority from the extension:
-  // soonest ending first, then lowest price.
-  suggestions.sort((a, b) =>
-    listingEndMs(a) - listingEndMs(b) ||
-    listingPrice(a) - listingPrice(b) ||
-    String(a.title || "").localeCompare(String(b.title || ""), "fr")
+  const wished = new Set(
+    (Array.isArray(wishlistCardIds) ? wishlistCardIds : [])
+      .map(normalizeId)
+      .filter(Boolean)
   );
+
+  const segment = await fetchMarketplaceSegment(
+    credentials,
+    Math.max(0, Number(offset) || 0),
+    50
+  );
+
+  const now = Date.now();
+  const matches = [];
+  let ownedExcluded = 0;
+  let wishlistListings = 0;
+
+  for (const raw of segment.rows || []) {
+    const auction = normalizeAuction(raw);
+    const cardId = normalizeId(auction.cardId);
+
+    if (!cardId || !wished.has(cardId)) continue;
+    wishlistListings++;
+
+    if (auction.owned) {
+      ownedExcluded++;
+      continue;
+    }
+
+    if (String(auction.status || "").toLowerCase() !== "active") continue;
+    if (userId && String(auction.sellerId) === String(userId)) continue;
+
+    const end = listingEndMs(auction);
+    if (Number.isFinite(end) && end <= now) continue;
+
+    matches.push(auction);
+  }
 
   return {
     ok: true,
-    scanned,
-    failed,
-    suggestions
+    scannedListings: (segment.rows || []).length,
+    failedSegments: Number(segment.failedSegments) || 0,
+    recovered: !!segment.recovered,
+    wishlistListings,
+    ownedExcluded,
+    matches,
+    hasMore: segment.hasMore !== false,
+    nextOffset:
+      segment.hasMore === false
+        ? null
+        : Math.max(0, Number(offset) || 0) + 50
   };
 }
 
