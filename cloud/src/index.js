@@ -211,6 +211,94 @@ async function probeAuctionRead(env, listingId) {
   });
 }
 
+
+function wdDryNextBid(base) {
+  const n = Number(base);
+  if (!Number.isFinite(n) || n < 0) return null;
+  return Math.max(
+    Math.ceil(n * 1.10),
+    Math.floor(n) + 1
+  );
+}
+
+function wdDryClosed(auction) {
+  const status = String(auction?.status || "").toLowerCase();
+  if ([
+    "settled_sold","settled_unsold","sold","closed","expired",
+    "cancelled","canceled","ended","settled"
+  ].includes(status)) return true;
+
+  const end = Date.parse(auction?.end_at || auction?.endAt || "");
+  return Number.isFinite(end) && end <= Date.now();
+}
+
+async function wdDryFetchAuction(env, listingId) {
+  const response = await fetch(
+    "https://www.wiki-masters.com/api/marketplace/" + encodeURIComponent(listingId),
+    {
+      method: "GET",
+      headers: {
+        accept: "application/json, text/plain, */*",
+        cookie: env.WIKIMASTERS_COOKIE || "",
+        origin: "https://www.wiki-masters.com",
+        referer: "https://www.wiki-masters.com/marketplace"
+      },
+      redirect: "manual"
+    }
+  );
+
+  const text = await response.text();
+  let data = null;
+  try { data = text ? JSON.parse(text) : null; } catch {}
+
+  if (!response.ok) {
+    throw new Error("Auction GET failed with HTTP " + response.status);
+  }
+
+  const auction = data?.auction || data;
+  if (!auction || typeof auction !== "object") {
+    throw new Error("Auction response is not valid JSON.");
+  }
+
+  return auction;
+}
+
+async function wdDryFetchUserId(env) {
+  const url = new URL("https://www.wiki-masters.com/api/my-collection");
+  url.searchParams.set("sort", "rarity");
+  url.searchParams.set("rarity", "C");
+  url.searchParams.set("page", "0");
+  url.searchParams.set("stats", "0");
+
+  const response = await fetch(url.toString(), {
+    method: "GET",
+    headers: {
+      accept: "application/json, text/plain, */*",
+      cookie: env.WIKIMASTERS_COOKIE || "",
+      origin: "https://www.wiki-masters.com",
+      referer: "https://www.wiki-masters.com/"
+    },
+    redirect: "manual"
+  });
+
+  const text = await response.text();
+  let data = null;
+  try { data = text ? JSON.parse(text) : null; } catch {}
+
+  if (!response.ok) {
+    throw new Error("User lookup failed with HTTP " + response.status);
+  }
+
+  const rows = Array.isArray(data?.collection) ? data.collection : [];
+  const userId = rows.find(row => row?.user_id)?.user_id || null;
+
+  if (!userId) {
+    throw new Error("Unable to derive current WikiMasters user id.");
+  }
+
+  return String(userId);
+}
+
 export default {
   async fetch(request, env) {
     const url = new URL(request.url);
@@ -243,6 +331,74 @@ export default {
       }
 
       return probeWikiMastersAuth(env);
+    }
+
+
+    if (url.pathname === "/probe/dryrun/start") {
+      const denied = requireProbeKey(request, env);
+      if (denied) return denied;
+
+      if (request.method !== "POST") {
+        return json({ ok: false, error: "Method not allowed." }, 405);
+      }
+
+      let body = {};
+      try { body = await request.json(); } catch {}
+
+      const listingId = normalizeListingId(body.listing);
+      if (!listingId) {
+        return json({ ok: false, error: "Invalid listing id." }, 400);
+      }
+
+      const stub = env.AUTOBID_DRYRUN.get(
+        env.AUTOBID_DRYRUN.idFromName(listingId)
+      );
+
+      return stub.fetch(new Request("https://dryrun.internal/start", {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ ...body, listing: listingId })
+      }));
+    }
+
+    if (url.pathname === "/probe/dryrun/status") {
+      const denied = requireProbeKey(request, env);
+      if (denied) return denied;
+
+      if (request.method !== "GET") {
+        return json({ ok: false, error: "Method not allowed." }, 405);
+      }
+
+      const listingId = normalizeListingId(url.searchParams.get("listing"));
+      if (!listingId) {
+        return json({ ok: false, error: "Invalid listing id." }, 400);
+      }
+
+      const stub = env.AUTOBID_DRYRUN.get(
+        env.AUTOBID_DRYRUN.idFromName(listingId)
+      );
+
+      return stub.fetch("https://dryrun.internal/status");
+    }
+
+    if (url.pathname === "/probe/dryrun/stop") {
+      const denied = requireProbeKey(request, env);
+      if (denied) return denied;
+
+      if (request.method !== "POST") {
+        return json({ ok: false, error: "Method not allowed." }, 405);
+      }
+
+      const listingId = normalizeListingId(url.searchParams.get("listing"));
+      if (!listingId) {
+        return json({ ok: false, error: "Invalid listing id." }, 400);
+      }
+
+      const stub = env.AUTOBID_DRYRUN.get(
+        env.AUTOBID_DRYRUN.idFromName(listingId)
+      );
+
+      return stub.fetch("https://dryrun.internal/stop", { method: "POST" });
     }
 
     if (url.pathname === "/probe/timer/start") {
@@ -286,6 +442,9 @@ export default {
         "GET /health",
         "GET /probe/auth",
         "GET /probe/auction?listing=<uuid>",
+        "POST /probe/dryrun/start",
+        "GET /probe/dryrun/status?listing=<uuid>",
+        "POST /probe/dryrun/stop?listing=<uuid>",
         "POST /probe/timer/start",
         "GET /probe/timer/status"
       ]
@@ -406,5 +565,219 @@ export class TimerProbe extends DurableObject {
         await this.ctx.storage.setAlarm(Date.now() + 5000).catch(() => {});
       }
     }
+  }
+}
+
+
+export class AutoBidDryRun extends DurableObject {
+  constructor(ctx, env) {
+    super(ctx, env);
+    this.ctx = ctx;
+    this.env = env;
+  }
+
+  async fetch(request) {
+    const url = new URL(request.url);
+
+    if (url.pathname === "/start" && request.method === "POST") {
+      let body = {};
+      try { body = await request.json(); } catch {}
+
+      const listingId = normalizeListingId(body.listing);
+      const max = Number(body.max);
+      const intervalMs = Math.max(
+        1000,
+        Math.min(60_000, Math.round(Number(body.intervalMs) || 2000))
+      );
+      const requestedTicks = Math.max(
+        1,
+        Math.min(300, Math.round(Number(body.count) || 30))
+      );
+
+      if (!listingId) {
+        return json({ ok: false, error: "Invalid listing id." }, 400);
+      }
+
+      if (!Number.isFinite(max) || max <= 0) {
+        return json({ ok: false, error: "Invalid max amount." }, 400);
+      }
+
+      if (!this.env.WIKIMASTERS_COOKIE) {
+        return json({ ok: false, error: "WIKIMASTERS_COOKIE is missing." }, 503);
+      }
+
+      const userId = await wdDryFetchUserId(this.env);
+      const auction = await wdDryFetchAuction(this.env, listingId);
+
+      const state = {
+        listingId,
+        max,
+        intervalMs,
+        requestedTicks,
+        userId,
+        startedAt: Date.now(),
+        finishedAt: null,
+        stoppedAt: null,
+        ticks: 0,
+        reads: 0,
+        readErrors: 0,
+        lastWouldBidKey: null,
+        title:
+          auction?.card?.wikipedia_title ||
+          auction?.snapshot_search_document ||
+          null,
+        endAt: auction?.end_at || auction?.endAt || null,
+        events: []
+      };
+
+      await this.ctx.storage.put("dryRun", state);
+      await this.ctx.storage.setAlarm(Date.now() + intervalMs);
+
+      return json({
+        ok: true,
+        dryRun: true,
+        listingId,
+        title: state.title,
+        max,
+        intervalMs,
+        requestedTicks,
+        endAt: state.endAt,
+        note: "Read-only simulation. This code never sends POST /bid."
+      });
+    }
+
+    if (url.pathname === "/status" && request.method === "GET") {
+      const state = await this.ctx.storage.get("dryRun");
+
+      if (!state) {
+        return json({
+          ok: true,
+          running: false,
+          message: "No dry-run exists for this listing."
+        });
+      }
+
+      return json({
+        ok: true,
+        dryRun: true,
+        running: !state.finishedAt && !state.stoppedAt,
+        listingId: state.listingId,
+        title: state.title,
+        max: state.max,
+        intervalMs: state.intervalMs,
+        requestedTicks: state.requestedTicks,
+        ticks: state.ticks,
+        reads: state.reads,
+        readErrors: state.readErrors,
+        endAt: state.endAt,
+        startedAt: new Date(state.startedAt).toISOString(),
+        finishedAt: state.finishedAt
+          ? new Date(state.finishedAt).toISOString()
+          : null,
+        stoppedAt: state.stoppedAt
+          ? new Date(state.stoppedAt).toISOString()
+          : null,
+        events: state.events.slice(-40)
+      });
+    }
+
+    if (url.pathname === "/stop" && request.method === "POST") {
+      const state = await this.ctx.storage.get("dryRun");
+      if (!state) return json({ ok: true, stopped: false });
+
+      state.stoppedAt = Date.now();
+      await this.ctx.storage.put("dryRun", state);
+      await this.ctx.storage.deleteAlarm();
+
+      return json({ ok: true, stopped: true });
+    }
+
+    return json({ ok: false, error: "Dry-run route not found." }, 404);
+  }
+
+  async alarm() {
+    const state = await this.ctx.storage.get("dryRun");
+    if (!state || state.finishedAt || state.stoppedAt) return;
+
+    const now = Date.now();
+    state.ticks++;
+
+    try {
+      const auction = await wdDryFetchAuction(this.env, state.listingId);
+      state.reads++;
+
+      const currentBid = Number(
+        auction.current_bid ??
+        auction.currentBid ??
+        auction.base_amount ??
+        auction.baseAmount ??
+        0
+      );
+
+      const currentBidderId =
+        auction.current_bidder_id ||
+        auction.currentBidderId ||
+        null;
+
+      const closed = wdDryClosed(auction);
+      const highest = !!(
+        state.userId &&
+        currentBidderId &&
+        String(currentBidderId) === String(state.userId)
+      );
+
+      const nextBid = wdDryNextBid(currentBid);
+      const withinCap = Number.isFinite(nextBid) && nextBid <= state.max;
+
+      let action = "observe";
+      let wouldBid = false;
+
+      if (closed) {
+        action = "closed";
+      } else if (highest) {
+        action = "already-highest";
+      } else if (!withinCap) {
+        action = "cap-reached";
+      } else {
+        const key = state.listingId + ":" + currentBid + ":" + nextBid;
+        if (key !== state.lastWouldBidKey) {
+          action = "would-bid";
+          wouldBid = true;
+          state.lastWouldBidKey = key;
+        } else {
+          action = "same-state-no-repeat";
+        }
+      }
+
+      state.events.push({
+        at: new Date(now).toISOString(),
+        currentBid: Number.isFinite(currentBid) ? currentBid : null,
+        nextBid,
+        max: state.max,
+        highest,
+        wouldBid,
+        action,
+        status: auction.status || null
+      });
+
+      state.events = state.events.slice(-80);
+
+      if (closed || state.ticks >= state.requestedTicks) {
+        state.finishedAt = now;
+        await this.ctx.storage.put("dryRun", state);
+        return;
+      }
+    } catch (error) {
+      state.readErrors++;
+      state.events.push({
+        at: new Date(now).toISOString(),
+        action: "read-error",
+        error: error?.message || String(error)
+      });
+      state.events = state.events.slice(-80);
+    }
+
+    await this.ctx.storage.put("dryRun", state);
+    await this.ctx.storage.setAlarm(Date.now() + state.intervalMs);
   }
 }
