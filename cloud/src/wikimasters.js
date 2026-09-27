@@ -1114,3 +1114,168 @@ export async function discardUserCardOnce(credentials, userCardId) {
     balance: Number.isFinite(balance) ? balance : null
   };
 }
+
+
+function pricingCandidates(root, source) {
+  const out = [];
+  const seen = new Set();
+  const keyword =
+    /(price|prix|avg|average|mean|median|market|sale|sell|sold|value|worth|wikibid)/i;
+
+  function walk(value, path = [], depth = 0) {
+    if (depth > 7 || value == null) return;
+    if (typeof value !== "object") return;
+    if (seen.has(value)) return;
+    seen.add(value);
+
+    if (Array.isArray(value)) {
+      for (let i = 0; i < Math.min(value.length, 12); i++) {
+        walk(value[i], [...path, String(i)], depth + 1);
+      }
+      return;
+    }
+
+    for (const [key, child] of Object.entries(value)) {
+      const next = [...path, key];
+      const full = next.join(".");
+
+      if (
+        keyword.test(key) &&
+        (
+          typeof child === "number" ||
+          typeof child === "string" ||
+          typeof child === "boolean"
+        )
+      ) {
+        const text = String(child);
+        if (text.length <= 120) {
+          out.push({
+            source,
+            path: full,
+            value: child
+          });
+        }
+      }
+
+      if (child && typeof child === "object") {
+        walk(child, next, depth + 1);
+      }
+    }
+  }
+
+  walk(root);
+
+  return out
+    .filter((item, index, arr) =>
+      arr.findIndex(x =>
+        x.source === item.source &&
+        x.path === item.path &&
+        String(x.value) === String(item.value)
+      ) === index
+    )
+    .slice(0, 80);
+}
+
+function probableAverage(candidates) {
+  const ranked = (Array.isArray(candidates) ? candidates : [])
+    .map(item => {
+      const p = String(item.path || "").toLowerCase();
+      const n = Number(item.value);
+      if (!Number.isFinite(n) || n < 0) return null;
+
+      let score = 0;
+      if (/average|avg|mean|moyenne/.test(p)) score += 100;
+      if (/median|mediane/.test(p)) score += 70;
+      if (/sold|sale|sell|vente/.test(p)) score += 35;
+      if (/price|prix|value|worth|market/.test(p)) score += 20;
+      if (/current|base|minimum|min_|max_|starting|start/.test(p)) score -= 35;
+      if (/count|quantity|total_sales|number/.test(p)) score -= 40;
+
+      return { ...item, number: n, score };
+    })
+    .filter(Boolean)
+    .sort((a, b) => b.score - a.score);
+
+  return ranked[0]?.score >= 70
+    ? {
+        source: ranked[0].source,
+        path: ranked[0].path,
+        value: ranked[0].number
+      }
+    : null;
+}
+
+export async function probeCardPricing(credentials, {
+  cardId = "",
+  listingId = ""
+} = {}) {
+  let resolvedCardId = String(cardId || "").trim();
+  let title = "";
+  const candidates = [];
+  const inspectedSources = [];
+
+  if (listingId) {
+    try {
+      const data = await wikiGet(
+        credentials,
+        "https://www.wiki-masters.com/api/marketplace/" +
+          encodeURIComponent(String(listingId))
+      );
+
+      const auction = data?.auction || data || null;
+      if (auction && typeof auction === "object") {
+        resolvedCardId = String(
+          resolvedCardId ||
+          auction?.card_id ||
+          auction?.card?.id ||
+          ""
+        );
+
+        title = String(
+          auction?.card?.wikipedia_title ||
+          auction?.snapshot_search_document ||
+          ""
+        );
+
+        candidates.push(...pricingCandidates(auction, "marketplace-detail"));
+        inspectedSources.push("marketplace-detail");
+      }
+    } catch {}
+  }
+
+  if (resolvedCardId) {
+    try {
+      const session = supabaseSession(credentials);
+      const url = new URL(SUPABASE_URL + "/rest/v1/cards");
+      url.searchParams.set("select", "*");
+      url.searchParams.set("id", "eq." + resolvedCardId);
+      url.searchParams.set("limit", "1");
+
+      const result = await supabaseRequest(
+        url.pathname + url.search,
+        session
+      );
+
+      if (result.ok && Array.isArray(result.data) && result.data[0]) {
+        const row = result.data[0];
+
+        if (!title) {
+          title = String(row.wikipedia_title || row.title || "");
+        }
+
+        candidates.push(...pricingCandidates(row, "supabase-cards"));
+        inspectedSources.push("supabase-cards");
+      }
+    } catch {}
+  }
+
+  return {
+    ok: true,
+    cardId: resolvedCardId || null,
+    listingId: listingId || null,
+    title: title || null,
+    probableAverage: probableAverage(candidates),
+    candidates,
+    inspectedSources
+  };
+}
