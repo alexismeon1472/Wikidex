@@ -437,6 +437,27 @@ function publicState(state) {
       : []
   };
 }
+async function pushAccountCache(env, state) {
+  if (!env.USER_ACCOUNT || !state?.accountId || !state?.listingId) return;
+
+  try {
+    const stub = env.USER_ACCOUNT.get(
+      env.USER_ACCOUNT.idFromName(String(state.accountId))
+    );
+
+    await stub.fetch(
+      new Request("https://account.internal/autobids/cache", {
+        method: "PUT",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({
+          listingId: state.listingId,
+          state: publicState(state)
+        })
+      })
+    );
+  } catch {}
+}
+
 
 export class AutoBidEngine extends DurableObject {
   constructor(ctx, env) {
@@ -998,6 +1019,7 @@ export class AutoBidEngine extends DurableObject {
           });
 
           await this.ctx.storage.put("autoBid", state);
+          await pushAccountCache(this.env, state);
           await this.ctx.storage.deleteAlarm();
           return;
         }
@@ -1098,6 +1120,7 @@ export class AutoBidEngine extends DurableObject {
       });
 
       await this.ctx.storage.put("autoBid", state);
+      await pushAccountCache(this.env, state);
       await this.ctx.storage.deleteAlarm();
       return;
     }
