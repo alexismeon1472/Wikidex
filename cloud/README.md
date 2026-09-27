@@ -395,3 +395,52 @@ The AutoBid screen now groups entries into:
 Card title, rarity, card image, current/final bid, ceiling, sales-average reference and state are displayed where available.
 
 External bids synchronized from WikiMasters enter read-only `track` mode. Tracking mode never reaches the bid POST branch. It must be explicitly converted/configured as an AutoBid before real bidding is possible.
+
+
+## Installable PWA + Web Push
+
+WikiDex Cloud is now a Progressive Web App:
+
+- installable from Chrome / Edge on desktop and Android;
+- installable from Safari on iPhone/iPad with **Share -> Add to Home Screen**;
+- standalone display mode with WikiDex icons;
+- network-first app shell so online data stays fresh;
+- API, marketplace and AutoBid requests are never cached by the Service Worker.
+
+### One-time push setup
+
+From the `cloud` directory:
+
+```powershell
+npm install
+npm run push:setup
+npm run deploy
+```
+
+`push:setup` generates one VAPID key pair and writes these Cloudflare secrets directly through Wrangler:
+
+- `VAPID_PUBLIC_KEY`
+- `VAPID_PRIVATE_KEY`
+- `VAPID_SUBJECT`
+
+The private key is never printed by the setup script.
+
+After deployment, each user can open **Settings -> Notifications -> Enable**. Push subscriptions are stored encrypted in the user's `UserAccount` Durable Object with the existing `VAULT_MASTER_KEY`.
+
+Push events currently include:
+
+- a synchronized/manual tracked auction changing from highest bidder to outbid;
+- an AutoBid reaching its ceiling;
+- auction won;
+- auction lost.
+
+Expired Web Push endpoints (HTTP 404/410 from the browser push service) are automatically removed.
+
+### PWA routes
+
+- `/manifest.webmanifest`
+- `/sw.js`
+- `/icons/icon-192.png`
+- `/icons/icon-512.png`
+
+The Service Worker caches only the application shell/manifest/icons. Routes under `/api/`, `/probe/`, and `/autobid/` are explicitly left network-only.
