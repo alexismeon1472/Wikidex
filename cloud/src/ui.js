@@ -1092,7 +1092,7 @@ export function renderAppHtml() {
 
     if(!confirm(
       "Défausser définitivement "+count+
-      " carte(s) commune(s) ?\n\n"+
+      " carte(s) commune(s) ?\\n\\n"+
       "Wishlist, transactions et cartes étoilées protégées ne seront pas touchées."
     ))return;
 
