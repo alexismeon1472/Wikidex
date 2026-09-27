@@ -352,6 +352,17 @@ export function renderAppHtml() {
           <input id="listing" placeholder="UUID ou URL WikiMasters">
           <label for="max">Plafond Wikibidous</label>
           <input id="max" type="number" min="1" step="1" placeholder="200">
+          <div style="margin-top:10px;padding:11px;border:1px solid var(--line);border-radius:12px;background:var(--panel3)">
+            <div class="row" style="justify-content:space-between">
+              <div>
+                <div class="cellK">Référence de prix</div>
+                <div id="pricingValue" class="cellV">Non recherchée</div>
+              </div>
+              <button id="probePricing" class="btn ghost small">Chercher la moyenne</button>
+            </div>
+            <div id="pricingMeta" class="muted" style="font-size:11px;margin-top:6px"></div>
+            <button id="useAverageAsMax" class="btn small hidden" style="margin-top:8px">Utiliser comme plafond</button>
+          </div>
           <div class="check">
             <input id="confirmReal" type="checkbox">
             <label for="confirmReal" style="margin:0">
@@ -462,6 +473,7 @@ export function renderAppHtml() {
     failedSegments:0
   };
   var cleanupPlan = null;
+  var pricingProbe = null;
 
   function el(id){ return document.getElementById(id); }
 
@@ -803,6 +815,7 @@ export function renderAppHtml() {
         }
         setTab("autobid");
         el("max").focus();
+        probeAutoBidPricing();
       });
       actions.appendChild(auto);
 
@@ -1024,6 +1037,7 @@ export function renderAppHtml() {
         if(Number.isFinite(base))el("max").value=String(Math.max(Math.ceil(base*1.1),Math.floor(base)+1));
         setTab("autobid");
         el("max").focus();
+        probeAutoBidPricing();
       });
       actions.appendChild(auto);
 
@@ -1206,6 +1220,54 @@ export function renderAppHtml() {
     }
   }
 
+  async function probeAutoBidPricing(){
+    var listing=el("listing").value.trim();
+    pricingProbe=null;
+    el("useAverageAsMax").classList.add("hidden");
+    el("pricingValue").textContent="Recherche…";
+    el("pricingMeta").textContent="";
+
+    if(!listing){
+      el("pricingValue").textContent="ID ou URL d’enchère requis";
+      return;
+    }
+
+    try{
+      var data=await api(
+        "/api/pricing/probe?listing="+encodeURIComponent(listing)
+      );
+
+      pricingProbe=data;
+
+      if(data.probableAverage&&Number.isFinite(Number(data.probableAverage.value))){
+        var value=Number(data.probableAverage.value);
+        el("pricingValue").textContent=value+" Wikibidous";
+        el("pricingMeta").textContent=
+          "Champ détecté : "+data.probableAverage.path+
+          " · source : "+data.probableAverage.source;
+        el("useAverageAsMax").classList.remove("hidden");
+        return;
+      }
+
+      var candidates=Array.isArray(data.candidates)?data.candidates:[];
+      el("pricingValue").textContent="Moyenne non identifiée automatiquement";
+
+      if(candidates.length){
+        el("pricingMeta").textContent=
+          "Champs de prix trouvés : "+
+          candidates.slice(0,6).map(function(x){
+            return x.path+"="+x.value;
+          }).join(" · ");
+      }else{
+        el("pricingMeta").textContent=
+          "Aucun champ de prix repéré dans les données carte/enchère accessibles.";
+      }
+    }catch(e){
+      el("pricingValue").textContent="Recherche impossible";
+      el("pricingMeta").textContent=e.message;
+    }
+  }
+
   function statusLabel(bid){
     if(bid.running)return "Actif";
     if(bid.lastAction==="cap-reached")return "Plafond atteint";
@@ -1383,6 +1445,21 @@ export function renderAppHtml() {
     }catch(e){
       setMsg("sessionMsg",e.message,"error");
     }
+  });
+
+  el("probePricing").addEventListener("click",probeAutoBidPricing);
+  el("useAverageAsMax").addEventListener("click",function(){
+    if(!pricingProbe||!pricingProbe.probableAverage)return;
+    var value=Number(pricingProbe.probableAverage.value);
+    if(Number.isFinite(value)&&value>0){
+      el("max").value=String(Math.round(value));
+    }
+  });
+  el("listing").addEventListener("input",function(){
+    pricingProbe=null;
+    el("pricingValue").textContent="Non recherchée";
+    el("pricingMeta").textContent="";
+    el("useAverageAsMax").classList.add("hidden");
   });
 
   el("startBid").addEventListener("click",async function(){
