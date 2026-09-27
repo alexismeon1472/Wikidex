@@ -313,6 +313,181 @@ export class UserAccount extends DurableObject {
       }
     }
 
+    if (url.pathname === "/market-scan" && request.method === "PUT") {
+      let body = {};
+      try { body = await request.json(); } catch {}
+
+      if (!body?.scanId || !Array.isArray(body?.missingCards)) {
+        return json({ ok: false, error: "Invalid market scan snapshot." }, 400);
+      }
+
+      const snapshot = {
+        scanId: String(body.scanId),
+        createdAt: Number(body.createdAt) || Date.now(),
+        userId: body.userId ? String(body.userId) : null,
+        wishlistCount: Number(body.wishlistCount) || 0,
+        ownedUniqueCount: Number(body.ownedUniqueCount) || 0,
+        missingCount: Number(body.missingCount) || body.missingCards.length,
+        missingCards: body.missingCards.slice(0, 5000)
+      };
+
+      await this.ctx.storage.put("marketScan", snapshot);
+      return json({ ok: true, scanId: snapshot.scanId });
+    }
+
+    if (url.pathname === "/market-scan" && request.method === "GET") {
+      const snapshot = await this.ctx.storage.get("marketScan");
+      if (!snapshot) {
+        return json({ ok: false, error: "No market scan snapshot." }, 404);
+      }
+      return json({ ok: true, snapshot });
+    }
+
+    if (url.pathname === "/market-scan" && request.method === "DELETE") {
+      await this.ctx.storage.delete("marketScan");
+      return json({ ok: true });
+    }
+
+    if (url.pathname === "/cleanup-plan" && request.method === "PUT") {
+      let body = {};
+      try { body = await request.json(); } catch {}
+
+      if (!body?.planId || !Array.isArray(body?.items)) {
+        return json({ ok: false, error: "Invalid cleanup plan." }, 400);
+      }
+
+      const plan = {
+        planId: String(body.planId),
+        createdAt: Number(body.createdAt) || Date.now(),
+        protectStarred: body.protectStarred !== false,
+        summary: body.summary || {},
+        items: body.items.slice(0, 5000),
+        attempted: {},
+        results: []
+      };
+
+      await this.ctx.storage.put("cleanupPlan", plan);
+      return json({
+        ok: true,
+        planId: plan.planId,
+        itemCount: plan.items.length
+      });
+    }
+
+    if (url.pathname === "/cleanup-plan" && request.method === "GET") {
+      const plan = await this.ctx.storage.get("cleanupPlan");
+      if (!plan) {
+        return json({ ok: false, error: "No cleanup plan." }, 404);
+      }
+
+      return json({
+        ok: true,
+        plan: {
+          planId: plan.planId,
+          createdAt: plan.createdAt,
+          protectStarred: plan.protectStarred,
+          summary: plan.summary,
+          items: plan.items,
+          attempted: plan.attempted || {},
+          results: plan.results || []
+        }
+      });
+    }
+
+    if (url.pathname === "/cleanup-prepare" && request.method === "POST") {
+      let body = {};
+      try { body = await request.json(); } catch {}
+
+      const plan = await this.ctx.storage.get("cleanupPlan");
+      const planId = String(body.planId || "");
+      const userCardId = String(body.userCardId || "");
+
+      if (!plan || plan.planId !== planId) {
+        return json({ ok: false, error: "Cleanup plan mismatch." }, 409);
+      }
+
+      const candidate = plan.items.find(
+        item => String(item.userCardId || "") === userCardId
+      );
+
+      if (!candidate) {
+        return json({ ok: false, error: "Card is not in this cleanup plan." }, 400);
+      }
+
+      plan.attempted = plan.attempted || {};
+      if (plan.attempted[userCardId]) {
+        return json({
+          ok: true,
+          allowed: false,
+          attempt: plan.attempted[userCardId]
+        });
+      }
+
+      const attempt = {
+        status: "prepared",
+        preparedAt: new Date().toISOString()
+      };
+
+      // Persist before the destructive POST. A repeated execute call will
+      // never be allowed to POST this same owned-card id again.
+      plan.attempted[userCardId] = attempt;
+      await this.ctx.storage.put("cleanupPlan", plan);
+
+      return json({
+        ok: true,
+        allowed: true,
+        candidate,
+        attempt
+      });
+    }
+
+    if (url.pathname === "/cleanup-result" && request.method === "POST") {
+      let body = {};
+      try { body = await request.json(); } catch {}
+
+      const plan = await this.ctx.storage.get("cleanupPlan");
+      const planId = String(body.planId || "");
+      const userCardId = String(body.userCardId || "");
+
+      if (!plan || plan.planId !== planId) {
+        return json({ ok: false, error: "Cleanup plan mismatch." }, 409);
+      }
+
+      plan.attempted = plan.attempted || {};
+      const current = plan.attempted[userCardId];
+      if (!current) {
+        return json({ ok: false, error: "Cleanup attempt was not prepared." }, 409);
+      }
+
+      const result = {
+        userCardId,
+        outcome: String(body.outcome || "unknown"),
+        httpStatus: Number(body.httpStatus) || 0,
+        error: body.error ? String(body.error).slice(0, 240) : null,
+        balance: Number.isFinite(Number(body.balance))
+          ? Number(body.balance)
+          : null,
+        completedAt: new Date().toISOString()
+      };
+
+      plan.attempted[userCardId] = {
+        ...current,
+        ...result
+      };
+
+      plan.results = Array.isArray(plan.results) ? plan.results : [];
+      const oldIndex = plan.results.findIndex(
+        x => x.userCardId === userCardId
+      );
+
+      if (oldIndex >= 0) plan.results[oldIndex] = result;
+      else plan.results.push(result);
+
+      await this.ctx.storage.put("cleanupPlan", plan);
+
+      return json({ ok: true, result });
+    }
+
     if (url.pathname === "/autobids" && request.method === "GET") {
       const refs = await this.ctx.storage.get("autobidRefs");
       return json({
