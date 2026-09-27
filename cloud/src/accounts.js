@@ -5,6 +5,10 @@ const JSON_HEADERS = {
   "cache-control": "no-store"
 };
 
+const SUPABASE_URL = "https://cyrxjeppjqsxxjayfrur.supabase.co";
+const SUPABASE_PROJECT = "cyrxjeppjqsxxjayfrur";
+const SUPABASE_ANON_KEY = "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6ImN5cnhqZXBwanFzeHhqYXlmcnVyIiwicm9sZSI6ImFub24iLCJpYXQiOjE3NzM4ODAzMzksImV4cCI6MjA4OTQ1NjMzOX0.BZluyXygNxuQGDPxFX1zG5i-cqp10CVK-8GGtuak4Rg";
+
 function json(data, status = 200) {
   return new Response(JSON.stringify(data, null, 2), {
     status,
@@ -90,6 +94,266 @@ async function openJson(secret, sealed) {
   return JSON.parse(new TextDecoder().decode(plaintext));
 }
 
+function decodeBase64UrlText(value) {
+  try {
+    let s = String(value || "").replace(/-/g, "+").replace(/_/g, "/");
+    while (s.length % 4) s += "=";
+    const binary = atob(s);
+    const bytes = Uint8Array.from(binary, c => c.charCodeAt(0));
+    return new TextDecoder().decode(bytes);
+  } catch {
+    return "";
+  }
+}
+
+function jwtPayload(token) {
+  try {
+    const parts = String(token || "").split(".");
+    if (parts.length !== 3) return null;
+    return JSON.parse(decodeBase64UrlText(parts[1]));
+  } catch {
+    return null;
+  }
+}
+
+function findSupabaseSession(value, depth = 0) {
+  if (depth > 8 || value == null) {
+    return { accessToken: null, refreshToken: null };
+  }
+
+  if (typeof value === "string") {
+    const text = value.trim();
+
+    if (text.startsWith("base64-")) {
+      const decoded = decodeBase64UrlText(text.slice(7));
+      if (decoded) {
+        const found = findSupabaseSession(decoded, depth + 1);
+        if (found.accessToken || found.refreshToken) return found;
+      }
+    }
+
+    try {
+      const decoded = decodeURIComponent(text);
+      if (decoded !== text) {
+        const found = findSupabaseSession(decoded, depth + 1);
+        if (found.accessToken || found.refreshToken) return found;
+      }
+    } catch {}
+
+    if (
+      (text.startsWith("{") && text.endsWith("}")) ||
+      (text.startsWith("[") && text.endsWith("]"))
+    ) {
+      try {
+        return findSupabaseSession(JSON.parse(text), depth + 1);
+      } catch {}
+    }
+
+    if (/^eyJ[A-Za-z0-9_-]*\.[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+$/.test(text)) {
+      return {
+        accessToken: text,
+        refreshToken: null
+      };
+    }
+
+    return { accessToken: null, refreshToken: null };
+  }
+
+  if (Array.isArray(value)) {
+    let accessToken = null;
+    let refreshToken = null;
+
+    for (const item of value) {
+      const found = findSupabaseSession(item, depth + 1);
+      accessToken ||= found.accessToken;
+      refreshToken ||= found.refreshToken;
+    }
+
+    return { accessToken, refreshToken };
+  }
+
+  if (typeof value === "object") {
+    const accessToken =
+      typeof value.access_token === "string" ? value.access_token :
+      typeof value.accessToken === "string" ? value.accessToken :
+      null;
+
+    const refreshToken =
+      typeof value.refresh_token === "string" ? value.refresh_token :
+      typeof value.refreshToken === "string" ? value.refreshToken :
+      null;
+
+    if (accessToken || refreshToken) {
+      return { accessToken, refreshToken };
+    }
+
+    let nestedAccess = null;
+    let nestedRefresh = null;
+
+    for (const item of Object.values(value)) {
+      const found = findSupabaseSession(item, depth + 1);
+      nestedAccess ||= found.accessToken;
+      nestedRefresh ||= found.refreshToken;
+    }
+
+    return {
+      accessToken: nestedAccess,
+      refreshToken: nestedRefresh
+    };
+  }
+
+  return { accessToken: null, refreshToken: null };
+}
+
+function authCookieValue(cookieHeader) {
+  const parts = String(cookieHeader || "")
+    .split(";")
+    .map(x => x.trim())
+    .filter(Boolean)
+    .map(part => {
+      const i = part.indexOf("=");
+      return i < 0
+        ? { name: part, value: "" }
+        : {
+            name: part.slice(0, i),
+            value: part.slice(i + 1)
+          };
+    });
+
+  const prefix = "sb-" + SUPABASE_PROJECT + "-auth-token";
+  const direct = parts.find(x => x.name === prefix)?.value || "";
+  const chunks = parts
+    .filter(x => x.name.startsWith(prefix + "."))
+    .sort((a, b) => {
+      const ai = Number(a.name.match(/\.(\d+)$/)?.[1] || 0);
+      const bi = Number(b.name.match(/\.(\d+)$/)?.[1] || 0);
+      return ai - bi;
+    });
+
+  return chunks.length
+    ? chunks.map(x => x.value).join("")
+    : direct;
+}
+
+function extractSupabaseSession(credentials) {
+  const stored = credentials?.supabaseSession || {};
+
+  let accessToken =
+    stored.accessToken ||
+    stored.access_token ||
+    null;
+
+  let refreshToken =
+    stored.refreshToken ||
+    stored.refresh_token ||
+    null;
+
+  if (!accessToken || !refreshToken) {
+    const cookieSession = findSupabaseSession(
+      authCookieValue(credentials?.cookie || "")
+    );
+
+    accessToken ||= cookieSession.accessToken;
+    refreshToken ||= cookieSession.refreshToken;
+  }
+
+  if (!accessToken && credentials?.authorization) {
+    const authorization = String(credentials.authorization)
+      .replace(/^Bearer\s+/i, "")
+      .trim();
+
+    const authSession = findSupabaseSession(authorization);
+    accessToken ||= authSession.accessToken;
+    refreshToken ||= authSession.refreshToken;
+  }
+
+  const payload = jwtPayload(accessToken);
+
+  return {
+    accessToken: accessToken || null,
+    refreshToken: refreshToken || null,
+    userId:
+      stored.userId ||
+      stored.user_id ||
+      payload?.sub ||
+      null,
+    expiresAt:
+      Number(stored.expiresAt || stored.expires_at) ||
+      Number(payload?.exp) ||
+      null,
+    refreshedAt: stored.refreshedAt || null
+  };
+}
+
+function supabaseAccessNeedsRefresh(session, skewSeconds = 60) {
+  if (!session?.accessToken) return true;
+
+  const payload = jwtPayload(session.accessToken);
+  const exp = Number(session.expiresAt || payload?.exp);
+  if (!Number.isFinite(exp)) return false;
+
+  return exp <= Math.floor(Date.now() / 1000) + skewSeconds;
+}
+
+async function refreshSupabaseSession(session) {
+  if (!session?.refreshToken) {
+    throw new Error("Supabase refresh token is missing.");
+  }
+
+  const response = await fetch(
+    SUPABASE_URL + "/auth/v1/token?grant_type=refresh_token",
+    {
+      method: "POST",
+      headers: {
+        accept: "application/json",
+        apikey: SUPABASE_ANON_KEY,
+        "content-type": "application/json"
+      },
+      body: JSON.stringify({
+        refresh_token: session.refreshToken
+      })
+    }
+  );
+
+  const text = await response.text();
+  let data = null;
+
+  try {
+    data = text ? JSON.parse(text) : null;
+  } catch {}
+
+  if (
+    !response.ok ||
+    !data?.access_token ||
+    !data?.refresh_token
+  ) {
+    throw new Error(
+      "Supabase refresh failed (HTTP " + response.status + ")."
+    );
+  }
+
+  const payload = jwtPayload(data.access_token);
+  const expiresAt =
+    Number(data.expires_at) ||
+    (
+      Number(data.expires_in)
+        ? Math.floor(Date.now() / 1000) + Number(data.expires_in)
+        : Number(payload?.exp) || null
+    );
+
+  return {
+    accessToken: String(data.access_token),
+    refreshToken: String(data.refresh_token),
+    userId:
+      data?.user?.id ||
+      payload?.sub ||
+      session.userId ||
+      null,
+    expiresAt,
+    refreshedAt: new Date().toISOString()
+  };
+}
+
 function wikiHeaders(credentials) {
   const headers = new Headers({
     accept: "application/json, text/plain, */*",
@@ -149,6 +413,7 @@ export class UserRegistry extends DurableObject {
     super(ctx, env);
     this.ctx = ctx;
     this.env = env;
+    this.supabaseRefreshPromise = null;
   }
 
   async fetch(request) {
@@ -238,6 +503,14 @@ export class UserAccount extends DurableObject {
         authorization: String(body.authorization || "").trim()
       };
 
+      const initialSupabaseSession = extractSupabaseSession(credentials);
+      if (
+        initialSupabaseSession.accessToken ||
+        initialSupabaseSession.refreshToken
+      ) {
+        credentials.supabaseSession = initialSupabaseSession;
+      }
+
       if (!credentials.cookie && !credentials.authorization) {
         return json({
           ok: false,
@@ -303,8 +576,97 @@ export class UserAccount extends DurableObject {
       }
 
       try {
-        const credentials = await openJson(this.env.VAULT_MASTER_KEY, sealed);
-        return json({ ok: true, credentials });
+        let credentials = await openJson(
+          this.env.VAULT_MASTER_KEY,
+          sealed
+        );
+
+        let session = extractSupabaseSession(credentials);
+
+        if (
+          supabaseAccessNeedsRefresh(session) &&
+          session.refreshToken
+        ) {
+          if (!this.supabaseRefreshPromise) {
+            this.supabaseRefreshPromise = (async () => {
+              const refreshed = await refreshSupabaseSession(session);
+
+              const latestSealed = await this.ctx.storage.get(
+                "wikiCredentials"
+              );
+
+              let latestCredentials = latestSealed
+                ? await openJson(
+                    this.env.VAULT_MASTER_KEY,
+                    latestSealed
+                  )
+                : credentials;
+
+              latestCredentials = {
+                ...latestCredentials,
+                supabaseSession: refreshed
+              };
+
+              await this.ctx.storage.put(
+                "wikiCredentials",
+                await sealJson(
+                  this.env.VAULT_MASTER_KEY,
+                  latestCredentials
+                )
+              );
+
+              const profile =
+                await this.ctx.storage.get("profile") || {};
+
+              if (
+                refreshed.userId &&
+                profile.wikiUserId !== refreshed.userId
+              ) {
+                await this.ctx.storage.put("profile", {
+                  ...profile,
+                  wikiUserId: refreshed.userId,
+                  updatedAt: new Date().toISOString()
+                });
+              }
+
+              return latestCredentials;
+            })().finally(() => {
+              this.supabaseRefreshPromise = null;
+            });
+          }
+
+          try {
+            credentials = await this.supabaseRefreshPromise;
+            session = extractSupabaseSession(credentials);
+          } catch {
+            // Keep the original WikiMasters credentials usable for native
+            // endpoints. Supabase-only features will surface a specific error.
+          }
+        } else if (
+          !credentials.supabaseSession &&
+          (
+            session.accessToken ||
+            session.refreshToken
+          )
+        ) {
+          credentials = {
+            ...credentials,
+            supabaseSession: session
+          };
+
+          await this.ctx.storage.put(
+            "wikiCredentials",
+            await sealJson(
+              this.env.VAULT_MASTER_KEY,
+              credentials
+            )
+          );
+        }
+
+        return json({
+          ok: true,
+          credentials
+        });
       } catch (error) {
         return json({
           ok: false,
