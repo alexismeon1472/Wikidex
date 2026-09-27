@@ -1,4 +1,5 @@
 import { DurableObject } from "cloudflare:workers";
+import { notifyAutoBid } from "./push.js";
 
 const JSON_HEADERS = {
   "content-type": "application/json; charset=utf-8",
@@ -1020,6 +1021,11 @@ export class AutoBidEngine extends DurableObject {
 
           await this.ctx.storage.put("autoBid", state);
           await pushAccountCache(this.env, state);
+          await notifyAutoBid(
+            this.env,
+            state,
+            state.result === "won" ? "won" : "lost"
+          ).catch(() => {});
           await this.ctx.storage.deleteAlarm();
           return;
         }
@@ -1084,6 +1090,7 @@ export class AutoBidEngine extends DurableObject {
       null;
 
     const sellerId = auction.seller_id || auction.sellerId || null;
+    const previousBidderId = state.currentBidderId || null;
 
     state.title = auctionTitle(auction);
     state.cardId = state.cardId || auctionCardId(auction);
@@ -1121,6 +1128,11 @@ export class AutoBidEngine extends DurableObject {
 
       await this.ctx.storage.put("autoBid", state);
       await pushAccountCache(this.env, state);
+      await notifyAutoBid(
+        this.env,
+        state,
+        state.result === "won" ? "won" : "lost"
+      ).catch(() => {});
       await this.ctx.storage.deleteAlarm();
       return;
     }
@@ -1140,6 +1152,10 @@ export class AutoBidEngine extends DurableObject {
         currentBidderId &&
         String(currentBidderId) === String(state.userId);
 
+      const wasHighest =
+        previousBidderId &&
+        String(previousBidderId) === String(state.userId);
+
       state.lastAction = highest
         ? "tracking-highest"
         : "tracking-outbid";
@@ -1150,6 +1166,15 @@ export class AutoBidEngine extends DurableObject {
       });
 
       await this.ctx.storage.put("autoBid", state);
+
+      if (wasHighest && !highest) {
+        await notifyAutoBid(
+          this.env,
+          state,
+          "outbid"
+        ).catch(() => {});
+      }
+
       await this.ctx.storage.setAlarm(
         now + trackingPollDelayMs(auction, now)
       );
@@ -1188,6 +1213,11 @@ export class AutoBidEngine extends DurableObject {
         max: state.max
       });
       await this.ctx.storage.put("autoBid", state);
+      await notifyAutoBid(
+        this.env,
+        state,
+        "cap-reached"
+      ).catch(() => {});
       const checkAt = archiveCheckAt(state, now);
       if (checkAt) await this.ctx.storage.setAlarm(checkAt);
       else await this.ctx.storage.deleteAlarm();
@@ -1241,6 +1271,11 @@ export class AutoBidEngine extends DurableObject {
         max: fresh.max
       });
       await this.ctx.storage.put("autoBid", fresh);
+      await notifyAutoBid(
+        this.env,
+        fresh,
+        "cap-reached"
+      ).catch(() => {});
       const checkAt = archiveCheckAt(fresh);
       if (checkAt) await this.ctx.storage.setAlarm(checkAt);
       else await this.ctx.storage.deleteAlarm();
