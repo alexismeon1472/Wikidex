@@ -404,9 +404,7 @@ export class AutoBidEngine extends DurableObject {
         }, 503);
       }
 
-      const userId = body.userId
-        ? String(body.userId)
-        : await fetchUserId(credentials);
+      const userId = await fetchUserId(credentials);
       const auction = await fetchAuction(credentials, listingId);
       const now = Date.now();
 
@@ -498,7 +496,9 @@ export class AutoBidEngine extends DurableObject {
         return json({ ok: false, error: error?.message || String(error) }, 503);
       }
 
-      const userId = await fetchUserId(credentials);
+      const userId = body.userId
+        ? String(body.userId)
+        : await fetchUserId(credentials);
       const auction = await fetchAuction(credentials, listingId);
       const now = Date.now();
 
