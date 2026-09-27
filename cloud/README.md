@@ -213,3 +213,117 @@ POST /autobid/start
 Calling the start route while `AUTOBID_WRITES_ENABLED` is absent or not equal to `true` returns an error and schedules no alarm.
 
 For a future multi-user production version, replace the shared Worker-level WikiMasters credential and probe key with per-user authentication plus encrypted per-account credentials.
+
+
+## WikiDex Cloud multi-user dashboard
+
+The Worker now serves a small web dashboard at the root Worker URL:
+
+```text
+https://wikidex-cloud-poc.<subdomain>.workers.dev/
+```
+
+The multi-user layer uses two Durable Objects:
+
+- `UserRegistry`: personal WikiDex access tokens are stored only as SHA-256 hashes;
+- `UserAccount`: each user's WikiMasters session is encrypted with AES-GCM before storage.
+
+The existing `AutoBidEngine` is reused with an isolated Durable Object instance per
+`accountId + listingId`, so two WikiDex users can follow the same WikiMasters auction
+without sharing AutoBid state.
+
+### Required secrets
+
+Create an admin key locally and store it in Cloudflare:
+
+```powershell
+$adminKey = [guid]::NewGuid().ToString("N")
+$adminKey | npx wrangler secret put ADMIN_KEY
+```
+
+Create a separate master key used only to encrypt WikiMasters credentials at rest:
+
+```powershell
+$vaultKey = [guid]::NewGuid().ToString("N") + [guid]::NewGuid().ToString("N")
+$vaultKey | npx wrangler secret put VAULT_MASTER_KEY
+```
+
+Keep both values private. Never commit them and never paste them into GitHub or chat.
+
+Real bidding still uses the independent global write gate:
+
+```powershell
+npx wrangler secret put AUTOBID_WRITES_ENABLED
+```
+
+with the exact value:
+
+```text
+true
+```
+
+Setting the global gate to `false` immediately prevents new real-bid cycles from writing.
+
+### Create users
+
+Open the Worker root URL. The login screen contains an Administration panel.
+
+Enter:
+
+- the local `ADMIN_KEY`;
+- a display name.
+
+The generated `wdx_...` user token is shown exactly once. Give that token to the
+corresponding user. WikiDex stores only its SHA-256 hash in the registry.
+
+### Connect a WikiMasters account
+
+After signing in with the personal `wdx_...` token, paste the value of an authenticated
+WikiMasters `Cookie` request header into the Session panel.
+
+The Worker first validates the session with a read-only `GET /api/my-collection`, then
+encrypts the credentials with AES-GCM before storing them. The cookie is never returned
+by any public API response.
+
+### User-facing API
+
+The dashboard calls these authenticated routes with:
+
+```text
+Authorization: Bearer wdx_...
+```
+
+Available routes:
+
+```text
+GET    /api/me
+PUT    /api/session
+DELETE /api/session
+GET    /api/autobids
+POST   /api/autobids/start
+GET    /api/autobids/status?listing=<uuid>
+POST   /api/autobids/stop?listing=<uuid>
+POST   /api/autobids/max
+```
+
+Starting a real AutoBid still requires the explicit body field:
+
+```json
+{
+  "listing": "<uuid or marketplace URL>",
+  "max": 200,
+  "confirm": "REAL_BIDS"
+}
+```
+
+### Current MVP security notes
+
+This is appropriate for a small private 3-5 user deployment, but it is still an MVP:
+
+- user API tokens are long-lived bearer tokens stored by the web dashboard in browser local storage;
+- account creation is protected by a single administrator secret;
+- there is no password-reset/token-rotation UI yet;
+- WikiMasters session renewal currently relies on the behavior validated by the cloud POC;
+- the legacy single-user probe routes and global WikiMasters credential can remain during migration, but should be removed once all users use the encrypted per-account vault.
+
+The next hardening step is a short-lived HttpOnly browser session plus user-token rotation/revocation.
