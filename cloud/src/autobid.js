@@ -71,16 +71,48 @@ function auctionRarity(auction) {
   ).trim().toUpperCase() || null;
 }
 
+function auctionImageUrl(auction) {
+  return String(
+    auction?.card?.image_url ||
+    auction?.card?.imageUrl ||
+    auction?.snapshot_image_url ||
+    auction?.snapshotImageUrl ||
+    ""
+  ).trim() || null;
+}
+
+function auctionSellerName(auction) {
+  return String(
+    auction?.seller?.username ||
+    auction?.seller?.name ||
+    ""
+  ).trim() || null;
+}
+
 
 function pollDelayMs(auction, now = Date.now()) {
   const end = Date.parse(auction?.end_at || auction?.endAt || "");
-  if (!Number.isFinite(end)) return 5000;
+  if (!Number.isFinite(end)) return 60_000;
 
   const remaining = end - now;
-  if (remaining <= 20_000) return 2000;
-  if (remaining <= 60_000) return 5000;
-  if (remaining <= 5 * 60_000) return 10_000;
-  if (remaining <= 15 * 60_000) return 30_000;
+
+  // Free-tier oriented adaptive polling:
+  // >10 min: 60 s, 10-2 min: 15 s, 2 min-30 s: 5 s, last 30 s: 2 s.
+  if (remaining <= 30_000) return 2000;
+  if (remaining <= 2 * 60_000) return 5000;
+  if (remaining <= 10 * 60_000) return 15_000;
+  return 60_000;
+}
+
+function trackingPollDelayMs(auction, now = Date.now()) {
+  const end = Date.parse(auction?.end_at || auction?.endAt || "");
+  if (!Number.isFinite(end)) return 60_000;
+
+  const remaining = end - now;
+
+  // Read-only synced auctions do not need bidding-grade latency.
+  if (remaining <= 60_000) return 15_000;
+  if (remaining <= 5 * 60_000) return 30_000;
   return 60_000;
 }
 
@@ -297,6 +329,19 @@ function publicState(state) {
     title: state.title,
     cardId: state.cardId || null,
     rarity: state.rarity || null,
+    imageUrl: state.imageUrl || null,
+    sellerName: state.sellerName || null,
+    result: state.result || null,
+    finalPrice:
+      state.finalPrice !== null &&
+      state.finalPrice !== undefined &&
+      Number.isFinite(Number(state.finalPrice))
+        ? Number(state.finalPrice)
+        : null,
+    isHighest:
+      state.userId && state.currentBidderId
+        ? String(state.currentBidderId) === String(state.userId)
+        : false,
     average:
       state.average !== null &&
       state.average !== undefined &&
@@ -423,6 +468,8 @@ export class AutoBidEngine extends DurableObject {
         }, 409);
       }
 
+      const existing = await this.ctx.storage.get("autoBid");
+
       const state = {
         schemaVersion: 3,
         accountId,
@@ -440,7 +487,16 @@ export class AutoBidEngine extends DurableObject {
         title: auctionTitle(auction),
         cardId: auctionCardId(auction),
         rarity: auctionRarity(auction),
-        average: null,
+        average: existing?.average ?? null,
+        averageCheckedAt: existing?.averageCheckedAt || null,
+        imageUrl: auctionImageUrl(auction),
+        sellerName: auctionSellerName(auction),
+        result: null,
+        finalPrice: null,
+        currentBidderId:
+          auction.current_bidder_id ||
+          auction.currentBidderId ||
+          null,
         status: auction.status || null,
         currentBid: Number(
           auction.current_bid ??
@@ -452,9 +508,15 @@ export class AutoBidEngine extends DurableObject {
         nextBid: null,
         endAt: auction.end_at || auction.endAt || null,
         lastAction: "armed",
-        attemptedKeys: [],
-        attempts: [],
-        events: []
+        attemptedKeys: Array.isArray(existing?.attemptedKeys)
+          ? existing.attemptedKeys
+          : [],
+        attempts: Array.isArray(existing?.attempts)
+          ? existing.attempts
+          : [],
+        events: Array.isArray(existing?.events)
+          ? existing.events
+          : []
       };
 
       addEvent(state, {
@@ -517,6 +579,12 @@ export class AutoBidEngine extends DurableObject {
         existing.title = auctionTitle(auction);
         existing.cardId = existing.cardId || auctionCardId(auction);
         existing.rarity = existing.rarity || auctionRarity(auction);
+        existing.imageUrl = existing.imageUrl || auctionImageUrl(auction);
+        existing.sellerName = existing.sellerName || auctionSellerName(auction);
+        existing.currentBidderId =
+          auction.current_bidder_id ||
+          auction.currentBidderId ||
+          null;
         existing.status = auction.status || null;
         existing.currentBid = Number(
           auction.current_bid ??
@@ -557,6 +625,15 @@ export class AutoBidEngine extends DurableObject {
         cardId: auctionCardId(auction),
         rarity: auctionRarity(auction),
         average: existing?.average ?? null,
+        averageCheckedAt: existing?.averageCheckedAt || null,
+        imageUrl: auctionImageUrl(auction),
+        sellerName: auctionSellerName(auction),
+        result: null,
+        finalPrice: null,
+        currentBidderId:
+          auction.current_bidder_id ||
+          auction.currentBidderId ||
+          null,
         status: auction.status || null,
         currentBid: Number(
           auction.current_bid ??
@@ -840,6 +917,9 @@ export class AutoBidEngine extends DurableObject {
     state.title = auctionTitle(auction);
     state.cardId = state.cardId || auctionCardId(auction);
     state.rarity = state.rarity || auctionRarity(auction);
+    state.imageUrl = state.imageUrl || auctionImageUrl(auction);
+    state.sellerName = state.sellerName || auctionSellerName(auction);
+    state.currentBidderId = currentBidderId;
     state.status = auction.status || null;
     state.currentBid = Number.isFinite(currentBid) ? currentBid : null;
     state.endAt = auction.end_at || auction.endAt || null;
@@ -848,10 +928,19 @@ export class AutoBidEngine extends DurableObject {
     if (isClosed(auction, now)) {
       state.enabled = false;
       state.finishedAt = now;
-      state.lastAction =
+      state.result =
         currentBidderId && String(currentBidderId) === String(state.userId)
+          ? "won"
+          : "lost";
+      state.finalPrice = Number(
+        auction.final_price ??
+        auction.finalPrice ??
+        state.currentBid
+      );
+      state.lastAction =
+        state.result === "won"
           ? "finished-won"
-          : "finished";
+          : "finished-lost";
 
       addEvent(state, {
         action: state.lastAction,
@@ -889,7 +978,9 @@ export class AutoBidEngine extends DurableObject {
       });
 
       await this.ctx.storage.put("autoBid", state);
-      await this.ctx.storage.setAlarm(now + pollDelayMs(auction, now));
+      await this.ctx.storage.setAlarm(
+        now + trackingPollDelayMs(auction, now)
+      );
       return;
     }
 
