@@ -327,3 +327,43 @@ This is appropriate for a small private 3-5 user deployment, but it is still an 
 - the legacy single-user probe routes and global WikiMasters credential can remain during migration, but should be removed once all users use the encrypted per-account vault.
 
 The next hardening step is a short-lived HttpOnly browser session plus user-token rotation/revocation.
+
+
+## Wishlist-priority market and cleanup
+
+The Cloud dashboard now makes the Marketplace the default screen.
+
+The priority scan reproduces the useful extension behavior:
+
+1. read the WikiMasters wishlist;
+2. read the user's owned-card collection;
+3. remove wishlist cards already owned;
+4. query active marketplace listings for the remaining wishlist cards;
+5. keep one listing per card: lowest effective/current price, earliest ending as the tie-breaker;
+6. concatenate the selected listings by earliest end time, then lowest price.
+
+The scan is split into bounded chunks so large wishlists do not require one oversized Worker request.
+
+### Cleanup
+
+The Cleanup tab analyzes only rarity `C` owned cards and always protects:
+
+- wishlist cards;
+- cards involved in pending trades;
+- starred cards when the "protect starred" option is enabled.
+
+Analysis is read-only.
+
+Real discard writes have an independent global gate. Enable it only when the cleanup action is intentionally allowed:
+
+```powershell
+npx wrangler secret put CLEANUP_WRITES_ENABLED
+```
+
+Enter exactly:
+
+```text
+true
+```
+
+Each cleanup plan is persisted before execution. For every owned-card id, WikiDex records a prepared attempt **before** the single `POST /discard`. The same plan cannot automatically POST the same owned-card id twice, including after an ambiguous response or a repeated execute request. Processing stops after three consecutive failures, even when those failures span multiple HTTP batches.
