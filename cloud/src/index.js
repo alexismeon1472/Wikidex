@@ -1,4 +1,5 @@
 import { DurableObject } from "cloudflare:workers";
+export { AutoBidEngine } from "./autobid.js";
 
 const JSON_HEADERS = {
   "content-type": "application/json; charset=utf-8",
@@ -401,6 +402,100 @@ export default {
       return stub.fetch("https://dryrun.internal/stop", { method: "POST" });
     }
 
+    if (url.pathname === "/autobid/start") {
+      const denied = requireProbeKey(request, env);
+      if (denied) return denied;
+
+      if (request.method !== "POST") {
+        return json({ ok: false, error: "Method not allowed." }, 405);
+      }
+
+      let body = {};
+      try { body = await request.json(); } catch {}
+
+      const listingId = normalizeListingId(body.listing);
+      if (!listingId) {
+        return json({ ok: false, error: "Invalid listing id." }, 400);
+      }
+
+      const stub = env.AUTOBID_ENGINE.get(
+        env.AUTOBID_ENGINE.idFromName(listingId)
+      );
+
+      return stub.fetch(new Request("https://autobid.internal/start", {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ ...body, listing: listingId })
+      }));
+    }
+
+    if (url.pathname === "/autobid/status") {
+      const denied = requireProbeKey(request, env);
+      if (denied) return denied;
+
+      if (request.method !== "GET") {
+        return json({ ok: false, error: "Method not allowed." }, 405);
+      }
+
+      const listingId = normalizeListingId(url.searchParams.get("listing"));
+      if (!listingId) {
+        return json({ ok: false, error: "Invalid listing id." }, 400);
+      }
+
+      const stub = env.AUTOBID_ENGINE.get(
+        env.AUTOBID_ENGINE.idFromName(listingId)
+      );
+
+      return stub.fetch("https://autobid.internal/status");
+    }
+
+    if (url.pathname === "/autobid/stop") {
+      const denied = requireProbeKey(request, env);
+      if (denied) return denied;
+
+      if (request.method !== "POST") {
+        return json({ ok: false, error: "Method not allowed." }, 405);
+      }
+
+      const listingId = normalizeListingId(url.searchParams.get("listing"));
+      if (!listingId) {
+        return json({ ok: false, error: "Invalid listing id." }, 400);
+      }
+
+      const stub = env.AUTOBID_ENGINE.get(
+        env.AUTOBID_ENGINE.idFromName(listingId)
+      );
+
+      return stub.fetch("https://autobid.internal/stop", { method: "POST" });
+    }
+
+    if (url.pathname === "/autobid/max") {
+      const denied = requireProbeKey(request, env);
+      if (denied) return denied;
+
+      if (request.method !== "POST") {
+        return json({ ok: false, error: "Method not allowed." }, 405);
+      }
+
+      let body = {};
+      try { body = await request.json(); } catch {}
+
+      const listingId = normalizeListingId(body.listing);
+      if (!listingId) {
+        return json({ ok: false, error: "Invalid listing id." }, 400);
+      }
+
+      const stub = env.AUTOBID_ENGINE.get(
+        env.AUTOBID_ENGINE.idFromName(listingId)
+      );
+
+      return stub.fetch(new Request("https://autobid.internal/max", {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ max: body.max })
+      }));
+    }
+
     if (url.pathname === "/probe/timer/start") {
       const denied = requireProbeKey(request, env);
       if (denied) return denied;
@@ -445,6 +540,10 @@ export default {
         "POST /probe/dryrun/start",
         "GET /probe/dryrun/status?listing=<uuid>",
         "POST /probe/dryrun/stop?listing=<uuid>",
+        "POST /autobid/start",
+        "GET /autobid/status?listing=<uuid>",
+        "POST /autobid/stop?listing=<uuid>",
+        "POST /autobid/max",
         "POST /probe/timer/start",
         "GET /probe/timer/status"
       ]
