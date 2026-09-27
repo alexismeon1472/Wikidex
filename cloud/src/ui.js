@@ -1,5 +1,5 @@
 export function renderAppHtml() {
-  return \`<!doctype html>
+  return `<!doctype html>
 <html lang="fr">
 <head>
   <meta charset="utf-8">
@@ -1033,5 +1033,5 @@ export function renderAppHtml() {
 })();
 </script>
 </body>
-</html>\`;
+</html>`;
 }
