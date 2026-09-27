@@ -138,6 +138,10 @@ export function renderAppHtml() {
       <p class="muted">Entre ta clé personnelle WikiDex Cloud.</p>
       <label for="token">Clé WikiDex</label>
       <input id="token" type="password" autocomplete="off" placeholder="wdx_…">
+      <div class="check">
+        <input id="rememberMe" type="checkbox" checked>
+        <label for="rememberMe" style="margin:0">Se souvenir de moi sur cet appareil</label>
+      </div>
       <div class="row" style="margin-top:12px">
         <button id="login" class="btn primary">Se connecter</button>
       </div>
@@ -203,7 +207,11 @@ export function renderAppHtml() {
 <script>
 (() => {
   const $ = id => document.getElementById(id);
-  let token = localStorage.getItem("wikidexCloudToken") || "";
+  const TOKEN_KEY = "wikidexCloudToken";
+  let token =
+    localStorage.getItem(TOKEN_KEY) ||
+    sessionStorage.getItem(TOKEN_KEY) ||
+    "";
   let refreshTimer = null;
 
   function setMsg(id, text, kind="") {
@@ -261,7 +269,8 @@ export function renderAppHtml() {
       const me = await api("/api/me");
       showApp(me);
     } catch {
-      localStorage.removeItem("wikidexCloudToken");
+      localStorage.removeItem(TOKEN_KEY);
+      sessionStorage.removeItem(TOKEN_KEY);
       token = "";
       showLogin();
     }
@@ -372,7 +381,13 @@ export function renderAppHtml() {
     token = candidate;
     try {
       const me = await api("/api/me");
-      localStorage.setItem("wikidexCloudToken", token);
+      if ($("rememberMe").checked) {
+        localStorage.setItem(TOKEN_KEY, token);
+        sessionStorage.removeItem(TOKEN_KEY);
+      } else {
+        sessionStorage.setItem(TOKEN_KEY, token);
+        localStorage.removeItem(TOKEN_KEY);
+      }
       $("token").value = "";
       showApp(me);
     } catch (e) {
@@ -382,7 +397,8 @@ export function renderAppHtml() {
   });
 
   $("logout").addEventListener("click", () => {
-    localStorage.removeItem("wikidexCloudToken");
+    localStorage.removeItem(TOKEN_KEY);
+    sessionStorage.removeItem(TOKEN_KEY);
     token = "";
     showLogin();
   });
