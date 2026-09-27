@@ -495,6 +495,114 @@ export class UserAccount extends DurableObject {
       return json({ ok: true, result });
     }
 
+    if (url.pathname === "/autobids/cache" && request.method === "GET") {
+      const cache = await this.ctx.storage.get("autobidCache");
+      return json({
+        ok: true,
+        cache:
+          cache && typeof cache === "object"
+            ? cache
+            : {}
+      });
+    }
+
+    if (url.pathname === "/autobids/cache" && request.method === "PUT") {
+      let body = {};
+      try { body = await request.json(); } catch {}
+
+      const listingId = String(body.listingId || "").trim();
+      const state = body.state;
+
+      if (!listingId || !state || typeof state !== "object") {
+        return json({
+          ok: false,
+          error: "listingId and state are required."
+        }, 400);
+      }
+
+      const current = await this.ctx.storage.get("autobidCache");
+      const cache =
+        current && typeof current === "object"
+          ? current
+          : {};
+
+      cache[listingId] = {
+        listingId,
+        configured: state.configured !== false,
+        running: !!state.running,
+        paused: !!state.paused,
+        archived: !!state.archived,
+        mode: state.mode || null,
+        title: state.title || null,
+        cardId: state.cardId || null,
+        rarity: state.rarity || null,
+        imageUrl: state.imageUrl || null,
+        sellerName: state.sellerName || null,
+        result: state.result || null,
+        finalPrice:
+          state.finalPrice !== null &&
+          state.finalPrice !== undefined
+            ? state.finalPrice
+            : null,
+        isHighest: !!state.isHighest,
+        average:
+          state.average !== null &&
+          state.average !== undefined
+            ? state.average
+            : null,
+        averageCheckedAt: state.averageCheckedAt || null,
+        max:
+          state.max !== null &&
+          state.max !== undefined
+            ? state.max
+            : null,
+        status: state.status || null,
+        currentBid:
+          state.currentBid !== null &&
+          state.currentBid !== undefined
+            ? state.currentBid
+            : null,
+        nextBid:
+          state.nextBid !== null &&
+          state.nextBid !== undefined
+            ? state.nextBid
+            : null,
+        endAt: state.endAt || null,
+        startedAt: state.startedAt || null,
+        stoppedAt: state.stoppedAt || null,
+        pausedAt: state.pausedAt || null,
+        finishedAt: state.finishedAt || null,
+        lastReadAt: state.lastReadAt || null,
+        lastAction: state.lastAction || null,
+        readErrors: Number(state.readErrors) || 0,
+        bidAttempts: Number(state.bidAttempts) || 0,
+        lastBalance:
+          state.lastBalance !== null &&
+          state.lastBalance !== undefined
+            ? state.lastBalance
+            : null,
+        error: state.error || null,
+        cachedAt: new Date().toISOString()
+      };
+
+      const entries = Object.entries(cache)
+        .sort((a, b) =>
+          Date.parse(b[1]?.cachedAt || 0) -
+          Date.parse(a[1]?.cachedAt || 0)
+        )
+        .slice(0, 200);
+
+      await this.ctx.storage.put(
+        "autobidCache",
+        Object.fromEntries(entries)
+      );
+
+      return json({
+        ok: true,
+        state: cache[listingId]
+      });
+    }
+
     if (url.pathname === "/autobids" && request.method === "GET") {
       const refs = await this.ctx.storage.get("autobidRefs");
       return json({
@@ -535,6 +643,13 @@ export class UserAccount extends DurableObject {
         .filter(x => x !== listingId);
 
       await this.ctx.storage.put("autobidRefs", listings);
+
+      const currentCache = await this.ctx.storage.get("autobidCache");
+      if (currentCache && typeof currentCache === "object") {
+        delete currentCache[listingId];
+        await this.ctx.storage.put("autobidCache", currentCache);
+      }
+
       return json({ ok: true, listings });
     }
 
