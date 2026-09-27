@@ -313,6 +313,218 @@ export class UserAccount extends DurableObject {
       }
     }
 
+    if (url.pathname === "/push/status" && request.method === "GET") {
+      const sealed = await this.ctx.storage.get("pushSubscriptions");
+      let subscriptions = [];
+
+      if (sealed) {
+        try {
+          const decoded = await openJson(
+            this.env.VAULT_MASTER_KEY,
+            sealed
+          );
+          subscriptions = Array.isArray(decoded)
+            ? decoded
+            : [];
+        } catch {}
+      }
+
+      return json({
+        ok: true,
+        enabled: subscriptions.length > 0,
+        count: subscriptions.length
+      });
+    }
+
+    if (
+      url.pathname === "/push/subscriptions/raw" &&
+      request.method === "GET"
+    ) {
+      const sealed = await this.ctx.storage.get("pushSubscriptions");
+
+      if (!sealed) {
+        return json({
+          ok: true,
+          subscriptions: []
+        });
+      }
+
+      try {
+        const subscriptions = await openJson(
+          this.env.VAULT_MASTER_KEY,
+          sealed
+        );
+
+        return json({
+          ok: true,
+          subscriptions: Array.isArray(subscriptions)
+            ? subscriptions
+            : []
+        });
+      } catch {
+        return json({
+          ok: false,
+          error: "Unable to decrypt push subscriptions."
+        }, 500);
+      }
+    }
+
+    if (
+      url.pathname === "/push/subscriptions" &&
+      request.method === "POST"
+    ) {
+      let body = {};
+      try { body = await request.json(); } catch {}
+
+      const subscription = body?.subscription || body;
+      const endpoint = String(
+        subscription?.endpoint || ""
+      ).trim();
+      const p256dh = String(
+        subscription?.keys?.p256dh || ""
+      ).trim();
+      const auth = String(
+        subscription?.keys?.auth || ""
+      ).trim();
+
+      let endpointUrl = null;
+      try {
+        endpointUrl = new URL(endpoint);
+      } catch {}
+
+      if (
+        !endpointUrl ||
+        endpointUrl.protocol !== "https:" ||
+        !p256dh ||
+        !auth ||
+        endpoint.length > 4096 ||
+        p256dh.length > 1024 ||
+        auth.length > 1024
+      ) {
+        return json({
+          ok: false,
+          error: "Invalid Web Push subscription."
+        }, 400);
+      }
+
+      let subscriptions = [];
+      const sealed = await this.ctx.storage.get("pushSubscriptions");
+
+      if (sealed) {
+        try {
+          const decoded = await openJson(
+            this.env.VAULT_MASTER_KEY,
+            sealed
+          );
+          if (Array.isArray(decoded)) subscriptions = decoded;
+        } catch {}
+      }
+
+      const now = new Date().toISOString();
+      const clean = {
+        endpoint,
+        keys: {
+          p256dh,
+          auth
+        },
+        createdAt: now,
+        updatedAt: now
+      };
+
+      const index = subscriptions.findIndex(
+        item => item?.endpoint === endpoint
+      );
+
+      if (index >= 0) {
+        clean.createdAt =
+          subscriptions[index]?.createdAt ||
+          now;
+        subscriptions[index] = clean;
+      } else {
+        subscriptions.unshift(clean);
+      }
+
+      // A few devices per WikiDex user is enough. Oldest extras are dropped.
+      subscriptions = subscriptions
+        .slice(0, 10);
+
+      const nextSealed = await sealJson(
+        this.env.VAULT_MASTER_KEY,
+        subscriptions
+      );
+
+      await this.ctx.storage.put(
+        "pushSubscriptions",
+        nextSealed
+      );
+
+      return json({
+        ok: true,
+        enabled: true,
+        count: subscriptions.length
+      });
+    }
+
+    if (
+      url.pathname === "/push/subscriptions" &&
+      request.method === "DELETE"
+    ) {
+      let body = {};
+      try { body = await request.json(); } catch {}
+
+      const requested = Array.isArray(body?.endpoints)
+        ? body.endpoints
+        : body?.endpoint
+          ? [body.endpoint]
+          : [];
+
+      const endpoints = new Set(
+        requested
+          .map(value => String(value || "").trim())
+          .filter(Boolean)
+      );
+
+      const sealed = await this.ctx.storage.get("pushSubscriptions");
+      let subscriptions = [];
+
+      if (sealed) {
+        try {
+          const decoded = await openJson(
+            this.env.VAULT_MASTER_KEY,
+            sealed
+          );
+          if (Array.isArray(decoded)) subscriptions = decoded;
+        } catch {}
+      }
+
+      if (!endpoints.size) {
+        subscriptions = [];
+      } else {
+        subscriptions = subscriptions.filter(
+          item => !endpoints.has(item?.endpoint)
+        );
+      }
+
+      if (subscriptions.length) {
+        const nextSealed = await sealJson(
+          this.env.VAULT_MASTER_KEY,
+          subscriptions
+        );
+        await this.ctx.storage.put(
+          "pushSubscriptions",
+          nextSealed
+        );
+      } else {
+        await this.ctx.storage.delete("pushSubscriptions");
+      }
+
+      return json({
+        ok: true,
+        enabled: subscriptions.length > 0,
+        count: subscriptions.length
+      });
+    }
+
     if (url.pathname === "/market-scan" && request.method === "PUT") {
       let body = {};
       try { body = await request.json(); } catch {}
