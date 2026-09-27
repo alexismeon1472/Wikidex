@@ -1179,7 +1179,7 @@ export default {
         const credentials = await resolveAccountCredentials(env, accountId);
         const discovered = await discoverMyActiveBids(credentials, {
           startPage: Math.max(1, Number(body.startPage) || 1),
-          maxPages: 15
+          maxPages: 8
         });
 
         let imported = 0;
