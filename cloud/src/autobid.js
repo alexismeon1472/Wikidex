@@ -298,6 +298,9 @@ function publicState(state) {
     cardId: state.cardId || null,
     rarity: state.rarity || null,
     average: Number.isFinite(Number(state.average)) ? Number(state.average) : null,
+    averageCheckedAt: state.averageCheckedAt
+      ? new Date(state.averageCheckedAt).toISOString()
+      : null,
     max: state.max ?? null,
     status: state.status || null,
     currentBid: state.currentBid ?? null,
@@ -677,6 +680,7 @@ export class AutoBidEngine extends DurableObject {
 
       const average = Number(body.average);
       state.average = Number.isFinite(average) ? average : null;
+      state.averageCheckedAt = Date.now();
 
       await this.ctx.storage.put("autoBid", state);
 
