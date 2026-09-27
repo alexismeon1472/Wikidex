@@ -718,8 +718,8 @@ export function renderAppHtml() {
       binary+=String.fromCharCode(bytes[i]);
     }
     return btoa(binary)
-      .replace(/\+/g,"-")
-      .replace(/\//g,"_")
+      .split("+").join("-")
+      .split("/").join("_")
       .replace(/=+$/g,"");
   }
 
