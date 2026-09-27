@@ -1224,6 +1224,10 @@ export async function probeCardPricing(credentials, {
   let resolvedCardId = String(cardId || "").trim();
   let title = "";
   let rarity = "";
+  let imageUrl = "";
+  let sellerName = "";
+  let currentBid = null;
+  let endAt = null;
   let salesSummary = null;
   const candidates = [];
   const inspectedSources = [];
@@ -1255,6 +1259,25 @@ export async function probeCardPricing(credentials, {
         auction?.card?.rarity ||
         ""
       ).trim().toUpperCase();
+
+      imageUrl = String(
+        auction?.card?.image_url ||
+        auction?.card?.imageUrl ||
+        ""
+      ).trim();
+
+      sellerName = String(
+        auction?.seller?.username ||
+        auction?.seller?.name ||
+        ""
+      ).trim();
+
+      const bidValue = Number(
+        auction?.current_bid ??
+        auction?.base_amount
+      );
+      currentBid = Number.isFinite(bidValue) ? bidValue : null;
+      endAt = auction?.end_at || null;
 
       inspectedSources.push("marketplace-detail");
     }
@@ -1322,6 +1345,10 @@ export async function probeCardPricing(credentials, {
     listingId: listingId || null,
     title: title || null,
     rarity: rarity || selected?.rarity || null,
+    imageUrl: imageUrl || null,
+    sellerName: sellerName || null,
+    currentBid,
+    endAt,
     average: selected?.average ?? null,
     averages,
     source: "marketplace-card-sales-summary",
