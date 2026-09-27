@@ -317,7 +317,7 @@ export class UserAccount extends DurableObject {
       let body = {};
       try { body = await request.json(); } catch {}
 
-      if (!body?.scanId || !Array.isArray(body?.missingCards)) {
+      if (!body?.scanId || !Array.isArray(body?.wishlistCardIds)) {
         return json({ ok: false, error: "Invalid market scan snapshot." }, 400);
       }
 
@@ -326,9 +326,7 @@ export class UserAccount extends DurableObject {
         createdAt: Number(body.createdAt) || Date.now(),
         userId: body.userId ? String(body.userId) : null,
         wishlistCount: Number(body.wishlistCount) || 0,
-        ownedUniqueCount: Number(body.ownedUniqueCount) || 0,
-        missingCount: Number(body.missingCount) || body.missingCards.length,
-        missingCards: body.missingCards.slice(0, 5000)
+        wishlistCardIds: body.wishlistCardIds.slice(0, 5000)
       };
 
       await this.ctx.storage.put("marketScan", snapshot);
