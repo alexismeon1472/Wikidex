@@ -1,5 +1,7 @@
 import { DurableObject } from "cloudflare:workers";
+import { renderAppHtml } from "./ui.js";
 export { AutoBidEngine } from "./autobid.js";
+export { UserRegistry, UserAccount } from "./accounts.js";
 
 const JSON_HEADERS = {
   "content-type": "application/json; charset=utf-8",
@@ -40,6 +42,119 @@ function requireProbeKey(request, env) {
   }
 
   return null;
+}
+
+function htmlResponse() {
+  return new Response(renderAppHtml(), {
+    status: 200,
+    headers: {
+      "content-type": "text/html; charset=utf-8",
+      "cache-control": "no-store",
+      "x-content-type-options": "nosniff",
+      "referrer-policy": "no-referrer",
+      "permissions-policy": "camera=(), microphone=(), geolocation=()",
+      "content-security-policy":
+        "default-src 'self'; " +
+        "script-src 'self' 'unsafe-inline'; " +
+        "style-src 'self' 'unsafe-inline'; " +
+        "connect-src 'self'; " +
+        "img-src 'self' data:; " +
+        "frame-ancestors 'none'; base-uri 'none'; form-action 'self'"
+    }
+  });
+}
+
+function registryStub(env) {
+  return env.USER_REGISTRY.get(
+    env.USER_REGISTRY.idFromName("wikidex-user-registry")
+  );
+}
+
+function userAccountStub(env, accountId) {
+  return env.USER_ACCOUNT.get(
+    env.USER_ACCOUNT.idFromName(String(accountId))
+  );
+}
+
+function userEngineStub(env, accountId, listingId) {
+  return env.AUTOBID_ENGINE.get(
+    env.AUTOBID_ENGINE.idFromName(String(accountId) + ":" + String(listingId))
+  );
+}
+
+function requireAdminKey(request, env) {
+  if (!env.ADMIN_KEY) {
+    return json({
+      ok: false,
+      error: "ADMIN_KEY is not configured."
+    }, 503);
+  }
+
+  const supplied = request.headers.get("x-wikidex-admin-key") || "";
+  if (!safeEqual(supplied, env.ADMIN_KEY)) {
+    return json({ ok: false, error: "Unauthorized." }, 401);
+  }
+
+  return null;
+}
+
+async function authenticateUser(request, env) {
+  const raw = request.headers.get("authorization") || "";
+  const match = raw.match(/^Bearer\s+(.+)$/i);
+  const token = match?.[1]?.trim() || "";
+
+  if (!token) {
+    return {
+      error: json({ ok: false, error: "Unauthorized." }, 401),
+      account: null
+    };
+  }
+
+  const response = await registryStub(env).fetch(
+    new Request("https://registry.internal/lookup", {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ token })
+    })
+  );
+
+  const data = await response.json().catch(() => null);
+  if (!response.ok || !data?.account) {
+    return {
+      error: json({ ok: false, error: "Unauthorized." }, 401),
+      account: null
+    };
+  }
+
+  return { error: null, account: data.account };
+}
+
+async function accountSessionStatus(env, accountId) {
+  const response = await userAccountStub(env, accountId)
+    .fetch("https://account.internal/status");
+
+  return response.json().catch(() => ({
+    ok: false,
+    connected: false
+  }));
+}
+
+async function accountAutoBidRefs(env, accountId) {
+  const response = await userAccountStub(env, accountId)
+    .fetch("https://account.internal/autobids");
+
+  const data = await response.json().catch(() => null);
+  return Array.isArray(data?.listings) ? data.listings : [];
+}
+
+async function addAccountAutoBidRef(env, accountId, listingId) {
+  await userAccountStub(env, accountId).fetch(
+    new Request("https://account.internal/autobids/add", {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ listingId })
+    })
+  );
 }
 
 async function probeWikiMastersAuth(env) {
@@ -303,6 +418,211 @@ async function wdDryFetchUserId(env) {
 export default {
   async fetch(request, env) {
     const url = new URL(request.url);
+
+    if (url.pathname === "/" && request.method === "GET") {
+      return htmlResponse();
+    }
+
+    if (url.pathname === "/api/admin/users") {
+      const denied = requireAdminKey(request, env);
+      if (denied) return denied;
+
+      if (request.method === "POST") {
+        let body = {};
+        try { body = await request.json(); } catch {}
+
+        const response = await registryStub(env).fetch(
+          new Request("https://registry.internal/create", {
+            method: "POST",
+            headers: { "content-type": "application/json" },
+            body: JSON.stringify({ name: body.name })
+          })
+        );
+
+        return new Response(response.body, {
+          status: response.status,
+          headers: JSON_HEADERS
+        });
+      }
+
+      if (request.method === "GET") {
+        const response = await registryStub(env)
+          .fetch("https://registry.internal/list");
+
+        return new Response(response.body, {
+          status: response.status,
+          headers: JSON_HEADERS
+        });
+      }
+
+      return json({ ok: false, error: "Method not allowed." }, 405);
+    }
+
+    if (url.pathname === "/api/me" && request.method === "GET") {
+      const auth = await authenticateUser(request, env);
+      if (auth.error) return auth.error;
+
+      const session = await accountSessionStatus(env, auth.account.accountId);
+      return json({
+        ok: true,
+        account: auth.account,
+        session
+      });
+    }
+
+    if (url.pathname === "/api/session") {
+      const auth = await authenticateUser(request, env);
+      if (auth.error) return auth.error;
+
+      const stub = userAccountStub(env, auth.account.accountId);
+
+      if (request.method === "PUT") {
+        let body = {};
+        try { body = await request.json(); } catch {}
+
+        const response = await stub.fetch(
+          new Request("https://account.internal/session", {
+            method: "PUT",
+            headers: { "content-type": "application/json" },
+            body: JSON.stringify({
+              cookie: body.cookie || "",
+              authorization: body.authorization || ""
+            })
+          })
+        );
+
+        return new Response(response.body, {
+          status: response.status,
+          headers: JSON_HEADERS
+        });
+      }
+
+      if (request.method === "DELETE") {
+        const response = await stub.fetch(
+          "https://account.internal/session",
+          { method: "DELETE" }
+        );
+
+        return new Response(response.body, {
+          status: response.status,
+          headers: JSON_HEADERS
+        });
+      }
+
+      return json({ ok: false, error: "Method not allowed." }, 405);
+    }
+
+    if (url.pathname === "/api/autobids" && request.method === "GET") {
+      const auth = await authenticateUser(request, env);
+      if (auth.error) return auth.error;
+
+      const accountId = auth.account.accountId;
+      const refs = await accountAutoBidRefs(env, accountId);
+      const items = [];
+
+      for (const listingId of refs) {
+        try {
+          const response = await userEngineStub(env, accountId, listingId)
+            .fetch("https://autobid.internal/status");
+          const data = await response.json();
+          items.push({
+            listingId,
+            ...data
+          });
+        } catch (error) {
+          items.push({
+            listingId,
+            configured: false,
+            running: false,
+            error: error?.message || String(error)
+          });
+        }
+      }
+
+      return json({ ok: true, items });
+    }
+
+    if (url.pathname === "/api/autobids/start" && request.method === "POST") {
+      const auth = await authenticateUser(request, env);
+      if (auth.error) return auth.error;
+
+      let body = {};
+      try { body = await request.json(); } catch {}
+
+      const listingId = normalizeListingId(body.listing);
+      if (!listingId) {
+        return json({ ok: false, error: "Invalid listing id." }, 400);
+      }
+
+      const accountId = auth.account.accountId;
+      const response = await userEngineStub(env, accountId, listingId).fetch(
+        new Request("https://autobid.internal/start", {
+          method: "POST",
+          headers: { "content-type": "application/json" },
+          body: JSON.stringify({
+            listing: listingId,
+            max: body.max,
+            confirm: body.confirm,
+            accountId
+          })
+        })
+      );
+
+      const data = await response.json().catch(() => null);
+      if (!response.ok) {
+        return json(data || { ok: false, error: "AutoBid start failed." }, response.status);
+      }
+
+      await addAccountAutoBidRef(env, accountId, listingId);
+      return json(data);
+    }
+
+    if (url.pathname === "/api/autobids/status" && request.method === "GET") {
+      const auth = await authenticateUser(request, env);
+      if (auth.error) return auth.error;
+
+      const listingId = normalizeListingId(url.searchParams.get("listing"));
+      if (!listingId) {
+        return json({ ok: false, error: "Invalid listing id." }, 400);
+      }
+
+      return userEngineStub(env, auth.account.accountId, listingId)
+        .fetch("https://autobid.internal/status");
+    }
+
+    if (url.pathname === "/api/autobids/stop" && request.method === "POST") {
+      const auth = await authenticateUser(request, env);
+      if (auth.error) return auth.error;
+
+      const listingId = normalizeListingId(url.searchParams.get("listing"));
+      if (!listingId) {
+        return json({ ok: false, error: "Invalid listing id." }, 400);
+      }
+
+      return userEngineStub(env, auth.account.accountId, listingId)
+        .fetch("https://autobid.internal/stop", { method: "POST" });
+    }
+
+    if (url.pathname === "/api/autobids/max" && request.method === "POST") {
+      const auth = await authenticateUser(request, env);
+      if (auth.error) return auth.error;
+
+      let body = {};
+      try { body = await request.json(); } catch {}
+
+      const listingId = normalizeListingId(body.listing);
+      if (!listingId) {
+        return json({ ok: false, error: "Invalid listing id." }, 400);
+      }
+
+      return userEngineStub(env, auth.account.accountId, listingId).fetch(
+        new Request("https://autobid.internal/max", {
+          method: "POST",
+          headers: { "content-type": "application/json" },
+          body: JSON.stringify({ max: body.max })
+        })
+      );
+    }
 
     if (url.pathname === "/health") {
       return json({
