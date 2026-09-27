@@ -1139,20 +1139,32 @@ function pricingCandidates(root, source) {
       const next = [...path, key];
       const full = next.join(".");
 
-      if (
-        keyword.test(key) &&
-        (
-          typeof child === "number" ||
-          typeof child === "string" ||
-          typeof child === "boolean"
-        )
-      ) {
-        const text = String(child);
-        if (text.length <= 120) {
+      if (keyword.test(key)) {
+        const keyLower = String(key || "").toLowerCase();
+        const pathLower = full.toLowerCase();
+        const numeric =
+          typeof child === "number"
+            ? child
+            : (
+                typeof child === "string" &&
+                /^-?\d+(?:[.,]\d+)?$/.test(child.trim())
+              )
+              ? Number(child.replace(",", "."))
+              : NaN;
+
+        const looksIdentifier =
+          /(^|[_\.])(id|uuid)$/i.test(pathLower) ||
+          /seller_?id|buyer_?id|user_?id|card_?id|listing_?id/i.test(pathLower);
+
+        if (
+          !looksIdentifier &&
+          Number.isFinite(numeric) &&
+          numeric >= 0
+        ) {
           out.push({
             source,
             path: full,
-            value: child
+            value: numeric
           });
         }
       }
@@ -1242,6 +1254,47 @@ export async function probeCardPricing(credentials, {
       }
     } catch {}
   }
+
+  // The sell form is shown only for owned cards, so inspect the raw
+  // collection payload as an additional discovery source. This stays read-only.
+  try {
+    const url = new URL("https://www.wiki-masters.com/api/my-collection");
+    url.searchParams.set("sort", "rarity");
+    url.searchParams.set("page", "0");
+    url.searchParams.set("stats", "0");
+
+    const collection = await wikiGet(credentials, url.toString());
+    const rows = Array.isArray(collection?.collection)
+      ? collection.collection
+      : [];
+
+    const matching = resolvedCardId
+      ? rows.filter(row =>
+          normalizeId(row?.card_id || row?.card?.id) === normalizeId(resolvedCardId)
+        )
+      : [];
+
+    const samples = matching.length
+      ? matching.slice(0, 3)
+      : rows.slice(0, 8);
+
+    for (const row of samples) {
+      candidates.push(
+        ...pricingCandidates(
+          row,
+          matching.length
+            ? "owned-card-target"
+            : "owned-card-sample"
+        )
+      );
+    }
+
+    inspectedSources.push(
+      matching.length
+        ? "owned-card-target"
+        : "owned-card-sample"
+    );
+  } catch {}
 
   if (resolvedCardId) {
     try {
