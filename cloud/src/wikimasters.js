@@ -614,7 +614,7 @@ export async function getWishlist(credentials) {
     const url = new URL(SUPABASE_URL + "/rest/v1/cards");
     url.searchParams.set(
       "select",
-      "id,wikipedia_title,rarity,image_url"
+      "id,wikipedia_title,rarity"
     );
     url.searchParams.set("id", "in.(" + chunk.join(",") + ")");
 
@@ -629,7 +629,7 @@ export async function getWishlist(credentials) {
         id: String(row.id),
         title: String(row.wikipedia_title || "Carte"),
         rarity: String(row.rarity || ""),
-        image: String(row.image_url || "")
+        image: ""
       });
     }
   }
