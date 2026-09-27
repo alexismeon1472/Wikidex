@@ -1250,7 +1250,12 @@ export function renderAppHtml() {
 
       pricingProbe=data;
 
-      if(Number.isFinite(Number(data.average))){
+      if(
+        data.average!==null &&
+        data.average!==undefined &&
+        data.average!=="" &&
+        Number.isFinite(Number(data.average))
+      ){
         var value=Number(data.average);
         el("pricingValue").textContent=value+" Wikibidous";
         el("pricingMeta").textContent=
@@ -1352,7 +1357,12 @@ export function renderAppHtml() {
         }
 
         var reference="—";
-        if(Number.isFinite(Number(bid.average))){
+        if(
+          bid.average!==null &&
+          bid.average!==undefined &&
+          bid.average!=="" &&
+          Number.isFinite(Number(bid.average))
+        ){
           reference=String(Number(bid.average))+
             (bid.rarity?" ("+bid.rarity+")":"");
         }
