@@ -1,6 +1,6 @@
 import { DurableObject } from "cloudflare:workers";
 import { renderAppHtml } from "./ui.js";
-import { resolveAccountCredentials, searchCards, collectionPage, marketplacePage, getWishlist, addWishlistCard } from "./wikimasters.js";
+import { resolveAccountCredentials, searchCards, collectionPage, marketplacePage, getWishlist, addWishlistCard, buildPriorityMarketSnapshot, scanPriorityMarketChunk, analyzeCommonCleanup, discardUserCardOnce } from "./wikimasters.js";
 export { AutoBidEngine } from "./autobid.js";
 export { UserRegistry, UserAccount } from "./accounts.js";
 
@@ -173,6 +173,102 @@ async function stopAllAccountAutoBids(env, accountId) {
         .fetch("https://autobid.internal/stop", { method: "POST" });
     } catch {}
   }
+}
+
+async function putMarketScanSnapshot(env, accountId, snapshot) {
+  const response = await userAccountStub(env, accountId).fetch(
+    new Request("https://account.internal/market-scan", {
+      method: "PUT",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify(snapshot)
+    })
+  );
+
+  if (!response.ok) {
+    const data = await response.json().catch(() => null);
+    throw new Error(data?.error || "Unable to save market scan.");
+  }
+}
+
+async function getMarketScanSnapshot(env, accountId) {
+  const response = await userAccountStub(env, accountId)
+    .fetch("https://account.internal/market-scan");
+  const data = await response.json().catch(() => null);
+
+  if (!response.ok || !data?.snapshot) {
+    throw new Error(data?.error || "No market scan snapshot.");
+  }
+
+  return data.snapshot;
+}
+
+async function putCleanupPlan(env, accountId, plan) {
+  const response = await userAccountStub(env, accountId).fetch(
+    new Request("https://account.internal/cleanup-plan", {
+      method: "PUT",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify(plan)
+    })
+  );
+
+  const data = await response.json().catch(() => null);
+  if (!response.ok) {
+    throw new Error(data?.error || "Unable to save cleanup plan.");
+  }
+
+  return data;
+}
+
+async function getCleanupPlan(env, accountId) {
+  const response = await userAccountStub(env, accountId)
+    .fetch("https://account.internal/cleanup-plan");
+  const data = await response.json().catch(() => null);
+
+  if (!response.ok || !data?.plan) {
+    throw new Error(data?.error || "No cleanup plan.");
+  }
+
+  return data.plan;
+}
+
+async function prepareCleanupAttempt(env, accountId, planId, userCardId) {
+  const response = await userAccountStub(env, accountId).fetch(
+    new Request("https://account.internal/cleanup-prepare", {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ planId, userCardId })
+    })
+  );
+
+  const data = await response.json().catch(() => null);
+  if (!response.ok) {
+    throw new Error(data?.error || "Unable to prepare cleanup attempt.");
+  }
+
+  return data;
+}
+
+async function saveCleanupResult(env, accountId, planId, userCardId, result) {
+  const response = await userAccountStub(env, accountId).fetch(
+    new Request("https://account.internal/cleanup-result", {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({
+        planId,
+        userCardId,
+        outcome: result.outcome,
+        httpStatus: result.httpStatus,
+        error: result.error || null,
+        balance: result.balance
+      })
+    })
+  );
+
+  return response.ok;
+}
+
+function delay(ms) {
+  return new Promise(resolve => setTimeout(resolve, ms));
 }
 
 async function addAccountAutoBidRef(env, accountId, listingId) {
@@ -640,6 +736,277 @@ export default {
           auth.account.accountId
         );
         return json(await addWishlistCard(credentials, body.cardId));
+      } catch (error) {
+        return json({
+          ok: false,
+          error: error?.message || String(error)
+        }, 502);
+      }
+    }
+
+    if (url.pathname === "/api/marketplace/priority/start" && request.method === "POST") {
+      const auth = await authenticateUser(request, env);
+      if (auth.error) return auth.error;
+
+      try {
+        const credentials = await resolveAccountCredentials(
+          env,
+          auth.account.accountId
+        );
+
+        const snapshot = await buildPriorityMarketSnapshot(credentials);
+        await putMarketScanSnapshot(env, auth.account.accountId, snapshot);
+
+        return json({
+          ok: true,
+          scanId: snapshot.scanId,
+          wishlistCount: snapshot.wishlistCount,
+          ownedUniqueCount: snapshot.ownedUniqueCount,
+          missingCount: snapshot.missingCount,
+          createdAt: new Date(snapshot.createdAt).toISOString()
+        });
+      } catch (error) {
+        return json({
+          ok: false,
+          error: error?.message || String(error)
+        }, 502);
+      }
+    }
+
+    if (url.pathname === "/api/marketplace/priority" && request.method === "GET") {
+      const auth = await authenticateUser(request, env);
+      if (auth.error) return auth.error;
+
+      try {
+        const snapshot = await getMarketScanSnapshot(
+          env,
+          auth.account.accountId
+        );
+
+        const scanId = String(url.searchParams.get("scan") || "");
+        if (!scanId || scanId !== snapshot.scanId) {
+          return json({ ok: false, error: "Market scan mismatch." }, 409);
+        }
+
+        if (Date.now() - Number(snapshot.createdAt || 0) > 15 * 60_000) {
+          return json({
+            ok: false,
+            error: "Le scan marché a expiré. Relance l'analyse wishlist."
+          }, 410);
+        }
+
+        const offset = Math.max(
+          0,
+          Math.round(Number(url.searchParams.get("offset") || 0))
+        );
+        const limit = Math.max(
+          1,
+          Math.min(20, Math.round(Number(url.searchParams.get("limit") || 20)))
+        );
+
+        const chunk = snapshot.missingCards.slice(offset, offset + limit);
+        const credentials = await resolveAccountCredentials(
+          env,
+          auth.account.accountId
+        );
+
+        const result = await scanPriorityMarketChunk(credentials, {
+          cards: chunk,
+          userId: snapshot.userId
+        });
+
+        const nextOffset =
+          offset + chunk.length < snapshot.missingCards.length
+            ? offset + chunk.length
+            : null;
+
+        return json({
+          ok: true,
+          scanId,
+          offset,
+          processed: chunk.length,
+          totalMissing: snapshot.missingCards.length,
+          scannedListings: result.scanned,
+          failedRequests: result.failed,
+          suggestions: result.suggestions,
+          nextOffset
+        });
+      } catch (error) {
+        return json({
+          ok: false,
+          error: error?.message || String(error)
+        }, 502);
+      }
+    }
+
+    if (url.pathname === "/api/cleanup/analyze" && request.method === "POST") {
+      const auth = await authenticateUser(request, env);
+      if (auth.error) return auth.error;
+
+      let body = {};
+      try { body = await request.json(); } catch {}
+
+      try {
+        const credentials = await resolveAccountCredentials(
+          env,
+          auth.account.accountId
+        );
+
+        const analysis = await analyzeCommonCleanup(credentials, {
+          protectStarred: body.protectStarred !== false
+        });
+
+        const planId = crypto.randomUUID();
+        const createdAt = Date.now();
+
+        await putCleanupPlan(env, auth.account.accountId, {
+          planId,
+          createdAt,
+          protectStarred: analysis.protectStarred,
+          summary: {
+            scanned: analysis.scanned,
+            pagesRead: analysis.pagesRead,
+            wishlistCount: analysis.wishlistCount,
+            protectedWishlist: analysis.protectedWishlist,
+            protectedPending: analysis.protectedPending,
+            protectedStarred: analysis.protectedStarred,
+            discardable: analysis.candidates.length
+          },
+          items: analysis.candidates
+        });
+
+        return json({
+          ok: true,
+          planId,
+          createdAt: new Date(createdAt).toISOString(),
+          ...analysis
+        });
+      } catch (error) {
+        return json({
+          ok: false,
+          error: error?.message || String(error)
+        }, 502);
+      }
+    }
+
+    if (url.pathname === "/api/cleanup/execute" && request.method === "POST") {
+      const auth = await authenticateUser(request, env);
+      if (auth.error) return auth.error;
+
+      if (String(env.CLEANUP_WRITES_ENABLED || "").toLowerCase() !== "true") {
+        return json({
+          ok: false,
+          error:
+            "Le verrou global de défausse est désactivé. CLEANUP_WRITES_ENABLED doit valoir true."
+        }, 503);
+      }
+
+      let body = {};
+      try { body = await request.json(); } catch {}
+
+      if (body.confirm !== "DISCARD_COMMONS") {
+        return json({
+          ok: false,
+          error: 'Confirmation explicite requise: "DISCARD_COMMONS".'
+        }, 400);
+      }
+
+      const planId = String(body.planId || "");
+      if (!planId) {
+        return json({ ok: false, error: "planId requis." }, 400);
+      }
+
+      try {
+        const accountId = auth.account.accountId;
+        let plan = await getCleanupPlan(env, accountId);
+
+        if (plan.planId !== planId) {
+          return json({ ok: false, error: "Cleanup plan mismatch." }, 409);
+        }
+
+        if (Date.now() - Number(plan.createdAt || 0) > 15 * 60_000) {
+          return json({
+            ok: false,
+            error: "Le plan de nettoyage a expiré. Relance l'analyse."
+          }, 410);
+        }
+
+        const batchSize = Math.max(
+          1,
+          Math.min(20, Math.round(Number(body.batchSize) || 10))
+        );
+
+        const attempted = plan.attempted || {};
+        const pending = plan.items.filter(
+          item => !attempted[String(item.userCardId || "")]
+        ).slice(0, batchSize);
+
+        if (!pending.length) {
+          return json({
+            ok: true,
+            complete: true,
+            processed: 0,
+            remaining: 0,
+            results: plan.results || []
+          });
+        }
+
+        const credentials = await resolveAccountCredentials(env, accountId);
+        const results = [];
+        let consecutiveFailures = 0;
+
+        for (const item of pending) {
+          const userCardId = String(item.userCardId || "");
+          const prepared = await prepareCleanupAttempt(
+            env,
+            accountId,
+            planId,
+            userCardId
+          );
+
+          if (!prepared.allowed) continue;
+
+          const result = await discardUserCardOnce(
+            credentials,
+            userCardId
+          );
+
+          await saveCleanupResult(
+            env,
+            accountId,
+            planId,
+            userCardId,
+            result
+          );
+
+          results.push({
+            userCardId,
+            title: item.title,
+            ...result
+          });
+
+          if (result.outcome === "accepted") {
+            consecutiveFailures = 0;
+          } else {
+            consecutiveFailures++;
+          }
+
+          if (consecutiveFailures >= 3) break;
+          await delay(250);
+        }
+
+        plan = await getCleanupPlan(env, accountId);
+        const attemptedCount = Object.keys(plan.attempted || {}).length;
+        const remaining = Math.max(0, plan.items.length - attemptedCount);
+
+        return json({
+          ok: true,
+          complete: remaining === 0,
+          processed: results.length,
+          remaining,
+          stoppedAfterFailures: consecutiveFailures >= 3,
+          results
+        });
       } catch (error) {
         return json({
           ok: false,
