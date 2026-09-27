@@ -1478,7 +1478,7 @@ function detectBidParticipation(raw, userId) {
 
 export async function discoverMyActiveBids(credentials, {
   startPage = 1,
-  maxPages = 15
+  maxPages = 8
 } = {}) {
   const session = supabaseSession(credentials);
   const userId = session.userId;
@@ -1493,7 +1493,7 @@ export async function discoverMyActiveBids(credentials, {
   const firstPage = Math.max(1, Number(startPage) || 1);
   const pageBudget = Math.max(
     1,
-    Math.min(20, Number(maxPages) || 15)
+    Math.min(10, Number(maxPages) || 8)
   );
   const lastPage = firstPage + pageBudget - 1;
 
