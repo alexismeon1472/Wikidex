@@ -683,3 +683,318 @@ export async function addWishlistCard(credentials, cardId) {
 
   return { ok: true, added: true, already: false, cardId: id };
 }
+
+
+function normalizeId(value) {
+  return String(value || "").trim().toLowerCase().replace(/^api_/, "");
+}
+
+function listingPrice(auction) {
+  const values = [
+    auction?.effectiveBid,
+    auction?.currentBid,
+    auction?.baseAmount
+  ]
+    .map(Number)
+    .filter(Number.isFinite);
+
+  return values.length ? values[0] : Infinity;
+}
+
+function listingEndMs(auction) {
+  const end = auction?.endAt ? Date.parse(auction.endAt) : NaN;
+  return Number.isFinite(end) ? end : Infinity;
+}
+
+export async function getAllOwnedCards(credentials, {
+  rarity = ""
+} = {}) {
+  const items = [];
+  const pendingTradeIds = new Set();
+  const seenUserCards = new Set();
+  let pagesRead = 0;
+
+  for (let page = 0; page < 100; page++) {
+    const data = await collectionPage(credentials, { page, rarity });
+
+    for (const id of data.pendingTradeCardIds || []) {
+      if (id) pendingTradeIds.add(String(id));
+    }
+
+    if (!data.cards.length) {
+      pagesRead = page + 1;
+      break;
+    }
+
+    let added = 0;
+    for (const card of data.cards) {
+      const userCardId = String(card.userCardId || "");
+      if (!userCardId || seenUserCards.has(userCardId)) continue;
+
+      seenUserCards.add(userCardId);
+      items.push(card);
+      added++;
+    }
+
+    pagesRead = page + 1;
+
+    // Same guard as the extension: if the endpoint repeats a page,
+    // stop instead of looping forever.
+    if (!added) break;
+  }
+
+  return {
+    ok: true,
+    items,
+    pagesRead,
+    pendingTradeCardIds: [...pendingTradeIds]
+  };
+}
+
+export async function buildPriorityMarketSnapshot(credentials) {
+  const [wishlist, owned] = await Promise.all([
+    getWishlist(credentials),
+    getAllOwnedCards(credentials)
+  ]);
+
+  const ownedCardIds = new Set(
+    owned.items
+      .map(card => normalizeId(card.cardId))
+      .filter(Boolean)
+  );
+
+  const missingCards = wishlist.cards
+    .filter(card => {
+      const id = normalizeId(card.id);
+      return id && !ownedCardIds.has(id);
+    })
+    .map(card => ({
+      id: normalizeId(card.id),
+      title: String(card.title || "Carte"),
+      rarity: String(card.rarity || "")
+    }));
+
+  return {
+    scanId: crypto.randomUUID(),
+    createdAt: Date.now(),
+    userId: wishlist.userId,
+    wishlistCount: wishlist.count,
+    ownedUniqueCount: ownedCardIds.size,
+    missingCount: missingCards.length,
+    missingCards
+  };
+}
+
+async function marketplaceSearchByTitle(credentials, card, userId) {
+  const url = new URL("https://www.wiki-masters.com/api/marketplace");
+  url.searchParams.set("page", "1");
+  url.searchParams.set("limit", "50");
+  url.searchParams.set("sort", "recent");
+  url.searchParams.set("q", String(card.title || ""));
+
+  const data = await wikiGet(credentials, url.toString());
+  const rawRows = Array.isArray(data?.auctions) ? data.auctions : [];
+  const now = Date.now();
+
+  const rows = rawRows
+    .map(normalizeAuction)
+    .filter(auction => {
+      if (!auction.listingId) return false;
+      if (normalizeId(auction.cardId) !== normalizeId(card.id)) return false;
+      if (String(auction.status || "").toLowerCase() !== "active") return false;
+      if (userId && String(auction.sellerId) === String(userId)) return false;
+
+      const end = listingEndMs(auction);
+      if (Number.isFinite(end) && end <= now) return false;
+
+      return true;
+    });
+
+  let best = null;
+  for (const auction of rows) {
+    if (!best) {
+      best = { ...auction, alternatives: rows.length };
+      continue;
+    }
+
+    const price = listingPrice(auction);
+    const bestPrice = listingPrice(best);
+    const end = listingEndMs(auction);
+    const bestEnd = listingEndMs(best);
+
+    // Exact extension behavior: cheapest auction for that card,
+    // earliest ending auction as tie-breaker.
+    if (price < bestPrice || (price === bestPrice && end < bestEnd)) {
+      best = { ...auction, alternatives: rows.length };
+    }
+  }
+
+  return {
+    scanned: rawRows.length,
+    suggestion: best
+  };
+}
+
+export async function scanPriorityMarketChunk(credentials, {
+  cards = [],
+  userId = null
+} = {}) {
+  const selected = Array.isArray(cards) ? cards.slice(0, 20) : [];
+  const suggestions = [];
+  let scanned = 0;
+  let failed = 0;
+
+  // Keep outbound concurrency modest. This also keeps each Worker invocation
+  // comfortably below subrequest/concurrency limits.
+  for (let i = 0; i < selected.length; i += 5) {
+    const batch = selected.slice(i, i + 5);
+    const results = await Promise.allSettled(
+      batch.map(card => marketplaceSearchByTitle(credentials, card, userId))
+    );
+
+    for (const result of results) {
+      if (result.status === "fulfilled") {
+        scanned += result.value.scanned || 0;
+        if (result.value.suggestion) suggestions.push(result.value.suggestion);
+      } else {
+        failed++;
+      }
+    }
+  }
+
+  // Exact display priority from the extension:
+  // soonest ending first, then lowest price.
+  suggestions.sort((a, b) =>
+    listingEndMs(a) - listingEndMs(b) ||
+    listingPrice(a) - listingPrice(b) ||
+    String(a.title || "").localeCompare(String(b.title || ""), "fr")
+  );
+
+  return {
+    ok: true,
+    scanned,
+    failed,
+    suggestions
+  };
+}
+
+export async function analyzeCommonCleanup(credentials, {
+  protectStarred = true
+} = {}) {
+  const [wishlist, collection] = await Promise.all([
+    getWishlist(credentials),
+    getAllOwnedCards(credentials, { rarity: "C" })
+  ]);
+
+  const wishlistIds = new Set(
+    wishlist.cardIds.map(normalizeId).filter(Boolean)
+  );
+  const pending = new Set(
+    collection.pendingTradeCardIds.map(String)
+  );
+
+  const candidates = [];
+  let protectedWishlist = 0;
+  let protectedPending = 0;
+  let protectedStarred = 0;
+
+  for (const row of collection.items) {
+    const cardId = normalizeId(row.cardId);
+    const userCardId = String(row.userCardId || "");
+
+    if (cardId && wishlistIds.has(cardId)) {
+      protectedWishlist++;
+      continue;
+    }
+
+    if (
+      pending.has(userCardId) ||
+      (cardId && pending.has(cardId))
+    ) {
+      protectedPending++;
+      continue;
+    }
+
+    if (protectStarred && row.starred) {
+      protectedStarred++;
+      continue;
+    }
+
+    if (userCardId) {
+      candidates.push({
+        userCardId,
+        cardId,
+        title: row.title,
+        rarity: row.rarity,
+        starred: !!row.starred
+      });
+    }
+  }
+
+  return {
+    ok: true,
+    protectStarred: !!protectStarred,
+    scanned: collection.items.length,
+    pagesRead: collection.pagesRead,
+    wishlistCount: wishlist.count,
+    protectedWishlist,
+    protectedPending,
+    protectedStarred,
+    candidates
+  };
+}
+
+export async function discardUserCardOnce(credentials, userCardId) {
+  const id = String(userCardId || "").trim();
+  if (!id) {
+    return {
+      outcome: "rejected",
+      httpStatus: 0,
+      error: "Invalid user-card id."
+    };
+  }
+
+  // CRITICAL: exactly one destructive request. Never retry here.
+  let response;
+  try {
+    response = await fetch(
+      "https://www.wiki-masters.com/api/user-cards/" +
+        encodeURIComponent(id) +
+        "/discard",
+      {
+        method: "POST",
+        headers: credentialsHeaders(credentials),
+        redirect: "manual"
+      }
+    );
+  } catch (error) {
+    return {
+      outcome: "ambiguous",
+      httpStatus: 0,
+      error: error?.message || String(error)
+    };
+  }
+
+  const { text, data } = await readJson(response);
+
+  if (!response.ok) {
+    return {
+      outcome: "rejected",
+      httpStatus: response.status,
+      error: String(
+        data?.error ||
+        data?.message ||
+        text ||
+        "Discard rejected."
+      ).slice(0, 240)
+    };
+  }
+
+  const balance = Number(data?.balance);
+
+  return {
+    outcome: "accepted",
+    httpStatus: response.status,
+    balance: Number.isFinite(balance) ? balance : null
+  };
+}
