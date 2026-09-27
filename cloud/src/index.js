@@ -59,7 +59,7 @@ function htmlResponse() {
         "script-src 'self' 'unsafe-inline'; " +
         "style-src 'self' 'unsafe-inline'; " +
         "connect-src 'self'; " +
-        "img-src 'self' data:; " +
+        "img-src 'self' data: https:; " +
         "frame-ancestors 'none'; base-uri 'none'; form-action 'self'"
     }
   });
