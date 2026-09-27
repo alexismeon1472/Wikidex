@@ -1,6 +1,6 @@
 import { DurableObject } from "cloudflare:workers";
 import { renderAppHtml } from "./ui.js";
-import { resolveAccountCredentials, searchCards, collectionPage, marketplacePage, getWishlist, addWishlistCard, buildPriorityMarketSnapshot, scanPriorityMarketChunk, analyzeCommonCleanup, discardUserCardOnce } from "./wikimasters.js";
+import { resolveAccountCredentials, searchCards, collectionPage, marketplacePage, getWishlist, addWishlistCard, buildPriorityMarketSnapshot, scanPriorityMarketChunk, analyzeCommonCleanup, discardUserCardOnce, probeCardPricing } from "./wikimasters.js";
 export { AutoBidEngine } from "./autobid.js";
 export { UserRegistry, UserAccount } from "./accounts.js";
 
@@ -1030,6 +1030,42 @@ export default {
           page: Number(url.searchParams.get("page") || 1),
           limit: Number(url.searchParams.get("limit") || 50),
           sort: url.searchParams.get("sort") || "recent"
+        }));
+      } catch (error) {
+        return json({
+          ok: false,
+          error: error?.message || String(error)
+        }, 502);
+      }
+    }
+
+    if (url.pathname === "/api/pricing/probe" && request.method === "GET") {
+      const auth = await authenticateUser(request, env);
+      if (auth.error) return auth.error;
+
+      const listingId = normalizeListingId(
+        url.searchParams.get("listing")
+      );
+      const cardId = String(
+        url.searchParams.get("card") || ""
+      ).trim();
+
+      if (!listingId && !cardId) {
+        return json({
+          ok: false,
+          error: "listing ou card requis."
+        }, 400);
+      }
+
+      try {
+        const credentials = await resolveAccountCredentials(
+          env,
+          auth.account.accountId
+        );
+
+        return json(await probeCardPricing(credentials, {
+          listingId: listingId || "",
+          cardId
         }));
       } catch (error) {
         return json({
