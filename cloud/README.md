@@ -1,13 +1,13 @@
 # WikiDex Cloud POC
 
-This is a **non-destructive** Cloudflare proof of concept.
+This directory started as a **non-destructive** Cloudflare proof of concept and now also contains a guarded real AutoBid engine. Real writes are disabled by default.
 
 It tests two prerequisites for a future 24/7 multi-user WikiDex:
 
 1. Can a Cloudflare Durable Object wake up every ~2 seconds?
 2. Can a Cloudflare Worker perform an authenticated **read-only** request to WikiMasters without a browser being open?
 
-There is **no bid endpoint** and no discard endpoint in this POC.
+The read-only probes and dry-run remain available. A real `POST /bid` path now exists only inside the guarded AutoBid Durable Object. It cannot run unless the global write gate is explicitly enabled and an individual auction is explicitly armed. There is still no discard endpoint.
 
 ## 1. Install and log in
 
@@ -128,3 +128,88 @@ The next iteration can add:
 - web UI usable from iPhone, Edge, Chrome, etc.
 
 Do not add any real account credential to this repository.
+
+
+## Guarded real AutoBid engine
+
+The real engine lives in `src/autobid.js` and is intentionally inert after deployment.
+
+### Safety invariants
+
+- real writes require the Cloudflare secret `AUTOBID_WRITES_ENABLED` to equal `true`;
+- starting one auction also requires `confirm: "REAL_BIDS"`;
+- seller accounts are rejected;
+- no bid is sent if the account is already highest;
+- the +10% next bid is rounded upward and must remain within the configured ceiling;
+- no bid is sent in the final 500 ms;
+- the decision key is persisted **before** the state-changing request;
+- a decision key is attempted at most once;
+- `POST /bid` is called exactly once per attempt;
+- rejected or ambiguous writes are never automatically retried;
+- the next cycle reconciles state with a read-only `GET`;
+- the alarm handler absorbs errors instead of throwing, because Durable Object alarms are at-least-once;
+- polling is adaptive: 60 s far from the end, then 30 s / 10 s / 5 s / 2 s.
+
+### Deployment does not enable writes
+
+Deploy normally:
+
+```powershell
+git pull
+npm run deploy
+```
+
+Do **not** set the following secret until real bidding is intentionally being enabled:
+
+```powershell
+npx wrangler secret put AUTOBID_WRITES_ENABLED
+```
+
+Its value must be exactly:
+
+```text
+true
+```
+
+Without that secret, `POST /autobid/start` refuses to arm an auction.
+
+### Real AutoBid routes
+
+All routes are currently protected by the same `x-wikidex-probe-key` used by the POC.
+
+Status:
+
+```text
+GET /autobid/status?listing=<uuid>
+```
+
+Stop immediately:
+
+```text
+POST /autobid/stop?listing=<uuid>
+```
+
+Update the ceiling:
+
+```json
+POST /autobid/max
+{
+  "listing": "<uuid>",
+  "max": 200
+}
+```
+
+Explicitly arm a real auction:
+
+```json
+POST /autobid/start
+{
+  "listing": "<uuid>",
+  "max": 200,
+  "confirm": "REAL_BIDS"
+}
+```
+
+Calling the start route while `AUTOBID_WRITES_ENABLED` is absent or not equal to `true` returns an error and schedules no alarm.
+
+For a future multi-user production version, replace the shared Worker-level WikiMasters credential and probe key with per-user authentication plus encrypted per-account credentials.
