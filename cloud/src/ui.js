@@ -163,8 +163,39 @@ export function renderAppHtml() {
       border-top:1px solid var(--line);padding:12px 0
     }
     .marketRow{grid-template-columns:minmax(190px,2fr) repeat(4,minmax(85px,1fr)) auto}
-    .auctionRow{grid-template-columns:minmax(190px,2fr) repeat(5,minmax(78px,1fr)) auto}
+    .auctionRow{grid-template-columns:minmax(240px,2fr) repeat(5,minmax(78px,1fr)) auto}
     .marketRow:first-child,.auctionRow:first-child{border-top:0}
+    .auctionIdentity{display:flex;align-items:center;gap:10px;min-width:0}
+    .auctionThumb{
+      width:54px;height:72px;object-fit:cover;border-radius:9px;
+      border:1px solid var(--line);background:#080d17;flex:0 0 auto
+    }
+    .auctionThumbPlaceholder{
+      width:54px;height:72px;border-radius:9px;border:1px solid var(--line);
+      background:#080d17;display:grid;place-items:center;color:var(--muted);
+      font-size:10px;flex:0 0 auto
+    }
+    .auctionText{min-width:0}
+    .auctionText .wikiTitle{overflow-wrap:anywhere}
+    .bidSection{margin-top:14px;border:1px solid var(--line);border-radius:14px;padding:12px;background:rgba(13,21,39,.55)}
+    .bidSection:first-child{margin-top:0}
+    .bidSectionTitle{display:flex;align-items:center;justify-content:space-between;gap:10px;margin-bottom:4px}
+    .bidSectionTitle h3{margin:0;font-size:14px}
+    .archiveWin{background:rgba(23,51,40,.72);border-color:rgba(102,209,158,.34)}
+    .archiveLoss{background:rgba(60,32,40,.72);border-color:rgba(255,127,135,.34)}
+    .archiveWin .cellV,.archiveWin .wikiTitle{color:#d9ffea}
+    .archiveLoss .cellV,.archiveLoss .wikiTitle{color:#ffd9dc}
+    .draftPreview{
+      display:flex;gap:12px;align-items:center;margin-top:10px;padding:11px;
+      border:1px solid var(--line);border-radius:12px;background:var(--panel3)
+    }
+    .draftPreview img{
+      width:66px;height:88px;object-fit:cover;border-radius:10px;
+      border:1px solid var(--line);background:#080d17
+    }
+    .draftPreviewText{min-width:0}
+    .draftTitle{font-weight:850;line-height:1.25}
+    .draftMeta{font-size:12px;color:var(--muted);margin-top:4px}
     .cellK{font-size:10px;color:var(--muted);text-transform:uppercase;letter-spacing:.06em}
     .cellV{margin-top:2px}
     .sectionHead{
@@ -350,6 +381,13 @@ export function renderAppHtml() {
           <h2>Nouvel AutoBid</h2>
           <label for="listing">ID ou URL de l’enchère</label>
           <input id="listing" placeholder="UUID ou URL WikiMasters">
+          <div id="autobidDraftPreview" class="draftPreview hidden">
+            <div id="autobidDraftImageWrap"></div>
+            <div class="draftPreviewText">
+              <div id="autobidDraftTitle" class="draftTitle">Carte</div>
+              <div id="autobidDraftMeta" class="draftMeta"></div>
+            </div>
+          </div>
           <label for="max">Plafond Wikibidous</label>
           <input id="max" type="number" min="1" step="1" placeholder="200">
           <div style="margin-top:10px;padding:11px;border:1px solid var(--line);border-radius:12px;background:var(--panel3)">
@@ -381,7 +419,7 @@ export function renderAppHtml() {
           <div class="sectionHead">
             <div>
               <h2 style="margin:0">Mes AutoBids</h2>
-              <div class="muted" style="font-size:12px;margin-top:3px">AutoBids WikiDex + enchères synchronisées depuis WikiMasters.</div>
+              <div class="muted" style="font-size:12px;margin-top:3px">AutoBids WikiDex + suivis WikiMasters · rafraîchissement visuel toutes les 30 s.</div>
             </div>
             <div class="row">
               <button id="syncBids" class="btn primary">Synchroniser WikiMasters</button>
@@ -485,6 +523,7 @@ export function renderAppHtml() {
   };
   var cleanupPlan = null;
   var pricingProbe = null;
+  var autoBidDraft = null;
 
   function el(id){ return document.getElementById(id); }
 
@@ -537,7 +576,7 @@ export function renderAppHtml() {
     if(bidRefreshTimer)clearInterval(bidRefreshTimer);
     bidRefreshTimer=setInterval(function(){
       if(currentTab==="autobid")loadBids(true);
-    },5000);
+    },30000);
   }
 
   function logout(){
@@ -571,7 +610,6 @@ export function renderAppHtml() {
     if(name==="wishlist")loadWishlist();
     if(name==="market"){
       loadMarket();
-      if(!priorityScanStarted)scanPriorityMarket();
     }
     if(name==="autobid")loadBids();
   }
