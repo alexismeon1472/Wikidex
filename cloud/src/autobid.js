@@ -297,7 +297,13 @@ function publicState(state) {
     title: state.title,
     cardId: state.cardId || null,
     rarity: state.rarity || null,
-    average: Number.isFinite(Number(state.average)) ? Number(state.average) : null,
+    average:
+      state.average !== null &&
+      state.average !== undefined &&
+      state.average !== "" &&
+      Number.isFinite(Number(state.average))
+        ? Number(state.average)
+        : null,
     averageCheckedAt: state.averageCheckedAt
       ? new Date(state.averageCheckedAt).toISOString()
       : null,
@@ -398,7 +404,9 @@ export class AutoBidEngine extends DurableObject {
         }, 503);
       }
 
-      const userId = await fetchUserId(credentials);
+      const userId = body.userId
+        ? String(body.userId)
+        : await fetchUserId(credentials);
       const auction = await fetchAuction(credentials, listingId);
       const now = Date.now();
 
@@ -678,7 +686,14 @@ export class AutoBidEngine extends DurableObject {
       if (body.cardId) state.cardId = String(body.cardId);
       if (body.rarity) state.rarity = String(body.rarity).toUpperCase();
 
-      const average = Number(body.average);
+      const averageRaw = body.average;
+      const average =
+        averageRaw === null ||
+        averageRaw === undefined ||
+        averageRaw === ""
+          ? NaN
+          : Number(averageRaw);
+
       state.average = Number.isFinite(average) ? average : null;
       state.averageCheckedAt = Date.now();
 
