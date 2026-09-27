@@ -13,17 +13,31 @@
       {
         "name": "AUTOBID_DRYRUN",
         "class_name": "AutoBidDryRun"
+      },
+      {
+        "name": "AUTOBID_ENGINE",
+        "class_name": "AutoBidEngine"
       }
     ]
   },
   "migrations": [
     {
       "tag": "v1",
-      "new_sqlite_classes": ["TimerProbe"]
+      "new_sqlite_classes": [
+        "TimerProbe"
+      ]
     },
     {
       "tag": "v2",
-      "new_sqlite_classes": ["AutoBidDryRun"]
+      "new_sqlite_classes": [
+        "AutoBidDryRun"
+      ]
+    },
+    {
+      "tag": "v3",
+      "new_sqlite_classes": [
+        "AutoBidEngine"
+      ]
     }
   ]
 }
