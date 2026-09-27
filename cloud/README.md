@@ -367,3 +367,31 @@ true
 ```
 
 Each cleanup plan is persisted before execution. For every owned-card id, WikiDex records a prepared attempt **before** the single `POST /discard`. The same plan cannot automatically POST the same owned-card id twice, including after an ambiguous response or a repeated execute request. Processing stops after three consecutive failures, even when those failures span multiple HTTP batches.
+
+
+## Free-tier optimizations
+
+WikiDex Cloud is tuned to reduce Cloudflare request usage:
+
+- the web AutoBid screen refreshes every 30 seconds, and automatic refreshes query only live engines;
+- archived AutoBids are served from the per-user cache and are not re-read from their Durable Object on every UI refresh;
+- paused AutoBids are also served from cache during automatic refreshes;
+- a paused/cap-reached auction does no regular polling: it schedules one reconciliation around the auction end so it can be archived as won/lost;
+- real AutoBid polling is adaptive: 60 s when more than 10 min remain, 15 s from 10 to 2 min, 5 s from 2 min to 30 s, and 2 s in the last 30 s;
+- read-only synchronized bid tracking is slower: 60 s normally, 30 s inside 5 min, 15 s inside the final minute;
+- wishlist market priority scanning is manual only;
+- sales-average lookups are cached on AutoBid creation/synchronization instead of being repeated on every UI refresh;
+- WikiMasters bid synchronization is split into 8-page Worker batches and the UI caps a manual sync at 64 pages per click.
+
+### AutoBid manager
+
+The AutoBid screen now groups entries into:
+
+- Active;
+- Paused;
+- Archives / won;
+- Archives / lost.
+
+Card title, rarity, card image, current/final bid, ceiling, sales-average reference and state are displayed where available.
+
+External bids synchronized from WikiMasters enter read-only `track` mode. Tracking mode never reaches the bid POST branch. It must be explicitly converted/configured as an AutoBid before real bidding is possible.
