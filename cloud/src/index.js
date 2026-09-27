@@ -1,5 +1,6 @@
 import { DurableObject } from "cloudflare:workers";
 import { renderAppHtml } from "./ui.js";
+import { resolveAccountCredentials, searchCards, collectionPage, marketplacePage, getWishlist, addWishlistCard } from "./wikimasters.js";
 export { AutoBidEngine } from "./autobid.js";
 export { UserRegistry, UserAccount } from "./accounts.js";
 
@@ -510,6 +511,121 @@ export default {
       }
 
       return json({ ok: false, error: "Method not allowed." }, 405);
+    }
+
+    if (url.pathname === "/api/cards/search" && request.method === "GET") {
+      const auth = await authenticateUser(request, env);
+      if (auth.error) return auth.error;
+
+      try {
+        const credentials = await resolveAccountCredentials(
+          env,
+          auth.account.accountId
+        );
+
+        const rarities = url.searchParams
+          .getAll("rarity")
+          .map(x => String(x || "").toUpperCase());
+
+        const result = await searchCards(credentials, {
+          q: url.searchParams.get("q") || "",
+          page: Number(url.searchParams.get("page") || 0),
+          rarities
+        });
+
+        return json(result);
+      } catch (error) {
+        return json({
+          ok: false,
+          error: error?.message || String(error)
+        }, 502);
+      }
+    }
+
+    if (url.pathname === "/api/collection" && request.method === "GET") {
+      const auth = await authenticateUser(request, env);
+      if (auth.error) return auth.error;
+
+      try {
+        const credentials = await resolveAccountCredentials(
+          env,
+          auth.account.accountId
+        );
+
+        const result = await collectionPage(credentials, {
+          page: Number(url.searchParams.get("page") || 0),
+          rarity: url.searchParams.get("rarity") || ""
+        });
+
+        return json(result);
+      } catch (error) {
+        return json({
+          ok: false,
+          error: error?.message || String(error)
+        }, 502);
+      }
+    }
+
+    if (url.pathname === "/api/wishlist" && request.method === "GET") {
+      const auth = await authenticateUser(request, env);
+      if (auth.error) return auth.error;
+
+      try {
+        const credentials = await resolveAccountCredentials(
+          env,
+          auth.account.accountId
+        );
+        return json(await getWishlist(credentials));
+      } catch (error) {
+        return json({
+          ok: false,
+          error: error?.message || String(error)
+        }, 502);
+      }
+    }
+
+    if (url.pathname === "/api/wishlist" && request.method === "POST") {
+      const auth = await authenticateUser(request, env);
+      if (auth.error) return auth.error;
+
+      let body = {};
+      try { body = await request.json(); } catch {}
+
+      try {
+        const credentials = await resolveAccountCredentials(
+          env,
+          auth.account.accountId
+        );
+        return json(await addWishlistCard(credentials, body.cardId));
+      } catch (error) {
+        return json({
+          ok: false,
+          error: error?.message || String(error)
+        }, 502);
+      }
+    }
+
+    if (url.pathname === "/api/marketplace" && request.method === "GET") {
+      const auth = await authenticateUser(request, env);
+      if (auth.error) return auth.error;
+
+      try {
+        const credentials = await resolveAccountCredentials(
+          env,
+          auth.account.accountId
+        );
+
+        return json(await marketplacePage(credentials, {
+          page: Number(url.searchParams.get("page") || 1),
+          limit: Number(url.searchParams.get("limit") || 50),
+          sort: url.searchParams.get("sort") || "recent"
+        }));
+      } catch (error) {
+        return json({
+          ok: false,
+          error: error?.message || String(error)
+        }, 502);
+      }
     }
 
     if (url.pathname === "/api/autobids" && request.method === "GET") {
