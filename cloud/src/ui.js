@@ -361,7 +361,11 @@ export function renderAppHtml() {
               <button id="probePricing" class="btn ghost small">Chercher la moyenne</button>
             </div>
             <div id="pricingMeta" class="muted" style="font-size:11px;margin-top:6px"></div>
-            <button id="useAverageAsMax" class="btn small hidden" style="margin-top:8px">Utiliser comme plafond</button>
+            <div id="pricingActions" class="row hidden" style="margin-top:8px">
+              <button class="btn small" data-average-multiplier="0.8">80 %</button>
+              <button class="btn small" data-average-multiplier="1">100 %</button>
+              <button class="btn small" data-average-multiplier="1.2">120 %</button>
+            </div>
           </div>
           <div class="check">
             <input id="confirmReal" type="checkbox">
@@ -1223,7 +1227,7 @@ export function renderAppHtml() {
   async function probeAutoBidPricing(){
     var listing=el("listing").value.trim();
     pricingProbe=null;
-    el("useAverageAsMax").classList.add("hidden");
+    el("pricingActions").classList.add("hidden");
     el("pricingValue").textContent="Recherche…";
     el("pricingMeta").textContent="";
 
@@ -1239,34 +1243,34 @@ export function renderAppHtml() {
 
       pricingProbe=data;
 
-      if(data.probableAverage&&Number.isFinite(Number(data.probableAverage.value))){
-        var value=Number(data.probableAverage.value);
+      if(Number.isFinite(Number(data.average))){
+        var value=Number(data.average);
         el("pricingValue").textContent=value+" Wikibidous";
         el("pricingMeta").textContent=
-          "Champ détecté : "+data.probableAverage.path+
-          " · source : "+data.probableAverage.source;
-        el("useAverageAsMax").classList.remove("hidden");
+          (data.rarity?data.rarity+" · ":"")+
+          "moyenne des ventes WikiMasters";
+        el("pricingActions").classList.remove("hidden");
         return;
       }
 
-      var candidates=Array.isArray(data.candidates)?data.candidates:[];
-      el("pricingValue").textContent="Moyenne non identifiée automatiquement";
+      el("pricingValue").textContent="Moyenne indisponible";
 
-      if(candidates.length){
+      if(Array.isArray(data.averages)&&data.averages.length){
         el("pricingMeta").textContent=
-          "Champs de prix trouvés : "+
-          candidates.slice(0,6).map(function(x){
-            return x.path+"="+x.value;
+          "Moyennes disponibles : "+
+          data.averages.map(function(x){
+            return x.rarity+"="+x.average;
           }).join(" · ");
       }else{
         el("pricingMeta").textContent=
-          "Aucun champ de prix repéré dans les données carte/enchère accessibles.";
+          "Aucune moyenne renvoyée par WikiMasters pour cette carte.";
       }
     }catch(e){
       el("pricingValue").textContent="Recherche impossible";
       el("pricingMeta").textContent=e.message;
     }
   }
+
 
   function statusLabel(bid){
     if(bid.running)return "Actif";
@@ -1448,18 +1452,21 @@ export function renderAppHtml() {
   });
 
   el("probePricing").addEventListener("click",probeAutoBidPricing);
-  el("useAverageAsMax").addEventListener("click",function(){
-    if(!pricingProbe||!pricingProbe.probableAverage)return;
-    var value=Number(pricingProbe.probableAverage.value);
-    if(Number.isFinite(value)&&value>0){
-      el("max").value=String(Math.round(value));
-    }
+  document.querySelectorAll("[data-average-multiplier]").forEach(function(btn){
+    btn.addEventListener("click",function(){
+      if(!pricingProbe)return;
+      var average=Number(pricingProbe.average);
+      var multiplier=Number(btn.dataset.averageMultiplier);
+      if(Number.isFinite(average)&&average>0&&Number.isFinite(multiplier)){
+        el("max").value=String(Math.max(1,Math.round(average*multiplier)));
+      }
+    });
   });
   el("listing").addEventListener("input",function(){
     pricingProbe=null;
     el("pricingValue").textContent="Non recherchée";
     el("pricingMeta").textContent="";
-    el("useAverageAsMax").classList.add("hidden");
+    el("pricingActions").classList.add("hidden");
   });
 
   el("startBid").addEventListener("click",async function(){
