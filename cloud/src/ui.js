@@ -230,34 +230,14 @@ export function renderAppHtml() {
 
   <section id="appView" class="hidden">
     <nav class="nav" id="nav">
-      <button data-tab="dashboard" class="active">Dashboard</button>
+      <button data-tab="market" class="active">Marché</button>
       <button data-tab="search">Recherche</button>
       <button data-tab="collection">Collection</button>
       <button data-tab="wishlist">Wishlist</button>
-      <button data-tab="market">Marché</button>
       <button data-tab="autobid">AutoBid</button>
+      <button data-tab="cleanup">Nettoyage</button>
       <button data-tab="settings">Réglages</button>
     </nav>
-
-    <div id="tab-dashboard" class="tabPage">
-      <div class="grid">
-        <div class="card span12">
-          <div class="sectionHead">
-            <div>
-              <h2 style="margin-bottom:4px">Dashboard</h2>
-              <div class="muted">Vue rapide de ton compte WikiDex Cloud.</div>
-            </div>
-            <button id="refreshDashboard" class="btn ghost">Actualiser</button>
-          </div>
-          <div class="grid">
-            <div class="span4 metric"><div class="k">Session WikiMasters</div><div class="v" id="dashSession">—</div></div>
-            <div class="span4 metric"><div class="k">AutoBids actifs</div><div class="v" id="dashBids">—</div></div>
-            <div class="span4 metric"><div class="k">Wishlist</div><div class="v" id="dashWishlist">—</div></div>
-          </div>
-          <div id="dashboardMsg" class="msg"></div>
-        </div>
-      </div>
-    </div>
 
     <div id="tab-search" class="tabPage hidden">
       <div class="card">
@@ -324,25 +304,43 @@ export function renderAppHtml() {
       </div>
     </div>
 
-    <div id="tab-market" class="tabPage hidden">
-      <div class="card">
-        <div class="sectionHead">
-          <div><h2 style="margin-bottom:4px">Marché</h2><div class="muted">Enchères WikiMasters récentes.</div></div>
-          <button id="refreshMarket" class="btn ghost">Actualiser</button>
-        </div>
-        <div class="toolbar">
-          <div>
-            <label for="marketFilter">Filtrer la page</label>
-            <input id="marketFilter" placeholder="Titre, rareté, vendeur…">
+    <div id="tab-market" class="tabPage">
+      <div class="grid">
+        <div class="card span12">
+          <div class="sectionHead">
+            <div>
+              <h2 style="margin-bottom:4px">Priorités wishlist</h2>
+              <div class="muted">Wishlist − cartes déjà possédées · meilleure enchère par carte · tri fin la plus proche puis prix le plus bas.</div>
+            </div>
+            <button id="scanPriorityMarket" class="btn primary">↻ Scanner ma wishlist</button>
           </div>
-          <div class="pageControls">
-            <button id="marketPrev" class="btn ghost small">←</button>
-            <span id="marketPageLabel" class="muted">Page 1</span>
-            <button id="marketNext" class="btn ghost small">→</button>
-          </div>
+          <div id="prioritySummary" class="row" style="margin-bottom:10px"></div>
+          <div id="priorityMsg" class="msg"></div>
+          <div id="priorityResults" class="tableList" style="margin-top:12px"></div>
         </div>
-        <div id="marketMsg" class="msg"></div>
-        <div id="marketResults" class="tableList" style="margin-top:12px"></div>
+
+        <div class="card span12">
+          <div class="sectionHead">
+            <div>
+              <h2 style="margin-bottom:4px">Toutes les enchères</h2>
+              <div class="muted">Flux récent WikiMasters.</div>
+            </div>
+            <button id="refreshMarket" class="btn ghost">Actualiser</button>
+          </div>
+          <div class="toolbar">
+            <div>
+              <label for="marketFilter">Filtrer la page</label>
+              <input id="marketFilter" placeholder="Titre, rareté, vendeur…">
+            </div>
+            <div class="pageControls">
+              <button id="marketPrev" class="btn ghost small">←</button>
+              <span id="marketPageLabel" class="muted">Page 1</span>
+              <button id="marketNext" class="btn ghost small">→</button>
+            </div>
+          </div>
+          <div id="marketMsg" class="msg"></div>
+          <div id="marketResults" class="tableList" style="margin-top:12px"></div>
+        </div>
       </div>
     </div>
 
@@ -370,6 +368,42 @@ export function renderAppHtml() {
             <button id="refreshBids" class="btn ghost">Actualiser</button>
           </div>
           <div id="bids" class="tableList"></div>
+        </div>
+      </div>
+    </div>
+
+    <div id="tab-cleanup" class="tabPage hidden">
+      <div class="grid">
+        <div class="card span5">
+          <h2>Nettoyage des communes</h2>
+          <p class="muted">
+            Analyse uniquement les cartes communes (C). Les cartes en wishlist et en transaction sont toujours protégées.
+          </p>
+          <div class="check">
+            <input id="cleanupProtectStarred" type="checkbox" checked>
+            <label for="cleanupProtectStarred" style="margin:0">Protéger aussi les cartes étoilées</label>
+          </div>
+          <button id="cleanupAnalyze" class="btn primary" style="margin-top:12px">Analyser</button>
+          <div id="cleanupMsg" class="msg"></div>
+        </div>
+
+        <div class="card span7">
+          <h2>Résultat de l’analyse</h2>
+          <div id="cleanupStats" class="grid">
+            <div class="span4 metric"><div class="k">Communes analysées</div><div class="v" id="cleanupScanned">—</div></div>
+            <div class="span4 metric"><div class="k">Défaussables</div><div class="v" id="cleanupDiscardable">—</div></div>
+            <div class="span4 metric"><div class="k">Protégées</div><div class="v" id="cleanupProtected">—</div></div>
+          </div>
+          <div id="cleanupDetails" class="muted" style="margin-top:12px"></div>
+          <div id="cleanupCandidates" style="margin-top:12px;max-height:280px;overflow:auto"></div>
+          <div class="check">
+            <input id="cleanupConfirm" type="checkbox">
+            <label for="cleanupConfirm" style="margin:0">
+              Je confirme vouloir défausser définitivement toutes les cartes listées ci-dessus.
+            </label>
+          </div>
+          <button id="cleanupExecute" class="btn danger" style="margin-top:12px" disabled>Défausser les cartes</button>
+          <div id="cleanupRunMsg" class="msg"></div>
         </div>
       </div>
     </div>
@@ -411,12 +445,16 @@ export function renderAppHtml() {
   var TOKEN_KEY = "wikidexCloudToken";
   var token = localStorage.getItem(TOKEN_KEY) || sessionStorage.getItem(TOKEN_KEY) || "";
   var currentMe = null;
-  var currentTab = "dashboard";
+  var currentTab = "market";
   var bidRefreshTimer = null;
   var collectionPage = 0;
   var marketPage = 1;
   var marketRows = [];
   var wishlistRows = [];
+  var priorityRows = [];
+  var priorityScanStarted = false;
+  var priorityScanning = false;
+  var cleanupPlan = null;
 
   function el(id){ return document.getElementById(id); }
 
@@ -468,7 +506,7 @@ export function renderAppHtml() {
     setTab(currentTab);
     if(bidRefreshTimer)clearInterval(bidRefreshTimer);
     bidRefreshTimer=setInterval(function(){
-      if(currentTab==="autobid"||currentTab==="dashboard")loadBids(true);
+      if(currentTab==="autobid")loadBids(true);
     },5000);
   }
 
@@ -499,10 +537,12 @@ export function renderAppHtml() {
       btn.classList.toggle("active",btn.dataset.tab===name);
     });
 
-    if(name==="dashboard")loadDashboard();
     if(name==="collection")loadCollection();
     if(name==="wishlist")loadWishlist();
-    if(name==="market")loadMarket();
+    if(name==="market"){
+      loadMarket();
+      if(!priorityScanStarted)scanPriorityMarket();
+    }
     if(name==="autobid")loadBids();
   }
 
@@ -587,29 +627,6 @@ export function renderAppHtml() {
 
     root.appendChild(body);
     return root;
-  }
-
-  async function loadDashboard(){
-    setMsg("dashboardMsg","");
-    el("dashSession").textContent=currentMe&&currentMe.session&&currentMe.session.connected?"OK":"Non";
-    try{
-      var results=await Promise.allSettled([
-        api("/api/autobids"),
-        api("/api/wishlist")
-      ]);
-      var bids=results[0].status==="fulfilled"?results[0].value:null;
-      var wishlist=results[1].status==="fulfilled"?results[1].value:null;
-      var active=bids&&Array.isArray(bids.items)
-        ?bids.items.filter(function(x){return x.running;}).length
-        :0;
-      el("dashBids").textContent=String(active);
-      el("dashWishlist").textContent=wishlist?String(wishlist.count||0):"—";
-      if(results[1].status==="rejected"){
-        setMsg("dashboardMsg","Wishlist : "+results[1].reason.message,"error");
-      }
-    }catch(e){
-      setMsg("dashboardMsg",e.message,"error");
-    }
   }
 
   async function runSearch(){
@@ -702,6 +719,197 @@ export function renderAppHtml() {
     return Number.isNaN(d.getTime())?String(value):d.toLocaleString("fr-FR");
   }
 
+  function priorityPrice(row){
+    var values=[row.effectiveBid,row.currentBid,row.baseAmount]
+      .map(Number)
+      .filter(Number.isFinite);
+    return values.length?values[0]:Infinity;
+  }
+
+  function priorityEnd(row){
+    var end=row&&row.endAt?Date.parse(row.endAt):NaN;
+    return Number.isFinite(end)?end:Infinity;
+  }
+
+  function sortPriorityRows(){
+    priorityRows.sort(function(a,b){
+      return priorityEnd(a)-priorityEnd(b) ||
+        priorityPrice(a)-priorityPrice(b) ||
+        String(a.title||"").localeCompare(String(b.title||""),"fr");
+    });
+  }
+
+  function renderPriorityMarket(){
+    var root=el("priorityResults");
+    clearNode(root);
+
+    if(!priorityRows.length){
+      var empty=document.createElement("p");
+      empty.className="muted";
+      empty.textContent=priorityScanning
+        ?"Scan en cours…"
+        :"Aucune enchère prioritaire trouvée.";
+      root.appendChild(empty);
+      return;
+    }
+
+    priorityRows.forEach(function(row,index){
+      var line=document.createElement("div");
+      line.className="marketRow";
+
+      var title=document.createElement("div");
+      var main=document.createElement("div");
+      main.className="wikiTitle";
+      main.textContent=(index+1)+". "+(row.title||"Carte");
+
+      var meta=document.createElement("div");
+      meta.className="muted";
+      meta.style.fontSize="12px";
+      meta.textContent=(row.rarity||"")+" · "+
+        (row.alternatives>1?row.alternatives+" enchères trouvées":"1 enchère trouvée");
+      title.append(main,meta);
+
+      function cell(k,v){
+        var d=document.createElement("div");
+        var kk=document.createElement("div");
+        kk.className="cellK";
+        kk.textContent=k;
+        var vv=document.createElement("div");
+        vv.className="cellV";
+        vv.textContent=v;
+        d.append(kk,vv);
+        return d;
+      }
+
+      var actions=document.createElement("div");
+      actions.className="actions";
+      var auto=document.createElement("button");
+      auto.className="btn primary small";
+      auto.textContent="AutoBid";
+      auto.addEventListener("click",function(){
+        el("listing").value=row.listingId;
+        var base=Number(row.currentBid);
+        if(Number.isFinite(base)){
+          el("max").value=String(
+            Math.max(Math.ceil(base*1.1),Math.floor(base)+1)
+          );
+        }
+        setTab("autobid");
+        el("max").focus();
+      });
+      actions.appendChild(auto);
+
+      line.append(
+        title,
+        cell("Prix",formatMoney(priorityPrice(row))),
+        cell("Fin",formatEnd(row.endAt)),
+        cell("Actuelle",formatMoney(row.currentBid)),
+        cell("Vendeur",row.sellerName||"—"),
+        actions
+      );
+
+      root.appendChild(line);
+    });
+  }
+
+  function renderPrioritySummary(data){
+    var root=el("prioritySummary");
+    clearNode(root);
+
+    [
+      ["Wishlist",data.wishlistCount],
+      ["Déjà possédées",Math.max(0,(data.wishlistCount||0)-(data.missingCount||0))],
+      ["À rechercher",data.missingCount]
+    ].forEach(function(pair){
+      var badge=document.createElement("span");
+      badge.className="status";
+      badge.textContent=pair[0]+" : "+pair[1];
+      root.appendChild(badge);
+    });
+  }
+
+  async function scanPriorityMarket(){
+    if(priorityScanning)return;
+    priorityScanning=true;
+    priorityScanStarted=true;
+    priorityRows=[];
+    renderPriorityMarket();
+
+    var btn=el("scanPriorityMarket");
+    if(btn)btn.disabled=true;
+    setMsg("priorityMsg","Préparation : wishlist − cartes déjà possédées…");
+
+    try{
+      var start=await api("/api/marketplace/priority/start",{
+        method:"POST",
+        body:JSON.stringify({})
+      });
+
+      renderPrioritySummary(start);
+
+      if(!start.missingCount){
+        setMsg(
+          "priorityMsg",
+          "Toutes les cartes de ta wishlist sont déjà dans ta collection.",
+          "success"
+        );
+        return;
+      }
+
+      var offset=0;
+      var scannedListings=0;
+      var failedRequests=0;
+
+      while(offset!==null){
+        setMsg(
+          "priorityMsg",
+          "Recherche des enchères… "+Math.min(offset,start.missingCount)+
+            "/"+start.missingCount+" carte(s)"
+        );
+
+        var part=await api(
+          "/api/marketplace/priority?scan="+
+          encodeURIComponent(start.scanId)+
+          "&offset="+offset+
+          "&limit=20"
+        );
+
+        scannedListings+=Number(part.scannedListings)||0;
+        failedRequests+=Number(part.failedRequests)||0;
+
+        priorityRows=priorityRows.concat(
+          Array.isArray(part.suggestions)?part.suggestions:[]
+        );
+
+        var seen=new Set();
+        priorityRows=priorityRows.filter(function(row){
+          var key=String(row.cardId||row.listingId||"");
+          if(seen.has(key))return false;
+          seen.add(key);
+          return true;
+        });
+
+        sortPriorityRows();
+        renderPriorityMarket();
+        offset=part.nextOffset;
+      }
+
+      setMsg(
+        "priorityMsg",
+        priorityRows.length+" carte(s) wishlist non possédée(s) trouvée(s) sur le marché"+
+          (failedRequests?" · "+failedRequests+" recherche(s) en erreur":"")+
+          ". Tri : fin la plus proche → prix le plus bas.",
+        failedRequests?"":"success"
+      );
+    }catch(e){
+      setMsg("priorityMsg",e.message,"error");
+    }finally{
+      priorityScanning=false;
+      if(btn)btn.disabled=false;
+      renderPriorityMarket();
+    }
+  }
+
   function renderMarket(){
     var q=el("marketFilter").value.trim().toLowerCase();
     var rows=marketRows.filter(function(row){
@@ -792,6 +1000,155 @@ export function renderAppHtml() {
     }
   }
 
+  function renderCleanupPlan(data){
+    cleanupPlan=data;
+
+    el("cleanupScanned").textContent=String(data.scanned||0);
+    el("cleanupDiscardable").textContent=String(
+      Array.isArray(data.candidates)?data.candidates.length:0
+    );
+
+    var protectedTotal=
+      Number(data.protectedWishlist||0)+
+      Number(data.protectedPending||0)+
+      Number(data.protectedStarred||0);
+    el("cleanupProtected").textContent=String(protectedTotal);
+
+    el("cleanupDetails").textContent=
+      "Wishlist : "+(data.protectedWishlist||0)+
+      " · Transactions : "+(data.protectedPending||0)+
+      " · Étoilées : "+(data.protectedStarred||0)+
+      " · Pages lues : "+(data.pagesRead||0);
+
+    var root=el("cleanupCandidates");
+    clearNode(root);
+
+    var rows=Array.isArray(data.candidates)?data.candidates:[];
+    if(!rows.length){
+      var empty=document.createElement("p");
+      empty.className="muted";
+      empty.textContent="Aucune carte commune à défausser.";
+      root.appendChild(empty);
+    }else{
+      rows.forEach(function(card){
+        var line=document.createElement("div");
+        line.style.padding="7px 0";
+        line.style.borderTop="1px solid var(--line)";
+        line.textContent=card.title||card.userCardId;
+        root.appendChild(line);
+      });
+    }
+
+    el("cleanupConfirm").checked=false;
+    el("cleanupExecute").disabled=true;
+  }
+
+  async function analyzeCleanup(){
+    var btn=el("cleanupAnalyze");
+    btn.disabled=true;
+    cleanupPlan=null;
+    el("cleanupExecute").disabled=true;
+    setMsg("cleanupMsg","Analyse des cartes communes, wishlist et transactions…");
+    setMsg("cleanupRunMsg","");
+
+    try{
+      var data=await api("/api/cleanup/analyze",{
+        method:"POST",
+        body:JSON.stringify({
+          protectStarred:el("cleanupProtectStarred").checked
+        })
+      });
+
+      renderCleanupPlan(data);
+      setMsg(
+        "cleanupMsg",
+        data.candidates.length+
+          " carte(s) commune(s) défaussable(s). Aucune carte n’a été supprimée.",
+        "success"
+      );
+    }catch(e){
+      setMsg("cleanupMsg",e.message,"error");
+    }finally{
+      btn.disabled=false;
+    }
+  }
+
+  async function executeCleanup(){
+    if(!cleanupPlan||!cleanupPlan.planId)return;
+
+    if(!el("cleanupConfirm").checked){
+      return setMsg(
+        "cleanupRunMsg",
+        "Coche la confirmation avant la défausse.",
+        "error"
+      );
+    }
+
+    var count=Array.isArray(cleanupPlan.candidates)
+      ?cleanupPlan.candidates.length
+      :0;
+
+    if(!count)return;
+
+    if(!confirm(
+      "Défausser définitivement "+count+
+      " carte(s) commune(s) ?\n\n"+
+      "Wishlist, transactions et cartes étoilées protégées ne seront pas touchées."
+    ))return;
+
+    var btn=el("cleanupExecute");
+    btn.disabled=true;
+    var processed=0;
+
+    try{
+      while(true){
+        setMsg(
+          "cleanupRunMsg",
+          "Défausse en cours… "+processed+"/"+count
+        );
+
+        var data=await api("/api/cleanup/execute",{
+          method:"POST",
+          body:JSON.stringify({
+            planId:cleanupPlan.planId,
+            confirm:"DISCARD_COMMONS",
+            batchSize:10
+          })
+        });
+
+        processed+=Number(data.processed)||0;
+
+        if(data.stoppedAfterFailures){
+          throw new Error(
+            "Arrêt de sécurité après 3 échecs consécutifs. Aucun POST en échec n’a été retenté."
+          );
+        }
+
+        if(data.complete){
+          setMsg(
+            "cleanupRunMsg",
+            "Nettoyage terminé. "+processed+" tentative(s) traitée(s).",
+            "success"
+          );
+          await analyzeCleanup();
+          break;
+        }
+
+        if(!data.processed && data.remaining){
+          throw new Error(
+            "Le nettoyage n’avance plus. Relance une analyse avant de continuer."
+          );
+        }
+      }
+    }catch(e){
+      setMsg("cleanupRunMsg",e.message,"error");
+    }finally{
+      btn.disabled=!cleanupPlan||
+        !el("cleanupConfirm").checked||
+        !(cleanupPlan.candidates&&cleanupPlan.candidates.length);
+    }
+  }
+
   function statusLabel(bid){
     if(bid.running)return "Actif";
     if(bid.lastAction==="cap-reached")return "Plafond atteint";
@@ -812,12 +1169,7 @@ export function renderAppHtml() {
         empty.className="muted";
         empty.textContent="Aucun AutoBid configuré.";
         root.appendChild(empty);
-        if(currentTab==="dashboard")el("dashBids").textContent="0";
         return;
-      }
-
-      if(currentTab==="dashboard"){
-        el("dashBids").textContent=String(data.items.filter(function(x){return x.running;}).length);
       }
 
       data.items.forEach(function(bid){
@@ -958,7 +1310,7 @@ export function renderAppHtml() {
       updateSessionBadge(data);
       if(currentMe)currentMe.session=data;
       setMsg("sessionMsg","Session WikiMasters validée et chiffrée.","success");
-      loadDashboard();
+      priorityScanStarted=false;
     }catch(e){
       setMsg("sessionMsg",e.message,"error");
     }
@@ -1006,7 +1358,6 @@ export function renderAppHtml() {
     }
   });
 
-  el("refreshDashboard").addEventListener("click",loadDashboard);
   el("searchBtn").addEventListener("click",runSearch);
   el("searchQ").addEventListener("keydown",function(e){if(e.key==="Enter")runSearch();});
 
@@ -1020,12 +1371,22 @@ export function renderAppHtml() {
   el("refreshWishlist").addEventListener("click",loadWishlist);
   el("wishlistFilter").addEventListener("input",renderWishlist);
 
+  el("scanPriorityMarket").addEventListener("click",scanPriorityMarket);
   el("refreshMarket").addEventListener("click",loadMarket);
   el("marketFilter").addEventListener("input",renderMarket);
   el("marketPrev").addEventListener("click",function(){
     if(marketPage>1){marketPage--;loadMarket();}
   });
   el("marketNext").addEventListener("click",function(){marketPage++;loadMarket();});
+
+  el("cleanupAnalyze").addEventListener("click",analyzeCleanup);
+  el("cleanupConfirm").addEventListener("change",function(){
+    el("cleanupExecute").disabled=
+      !cleanupPlan||
+      !el("cleanupConfirm").checked||
+      !(cleanupPlan.candidates&&cleanupPlan.candidates.length);
+  });
+  el("cleanupExecute").addEventListener("click",executeCleanup);
 
   el("refreshBids").addEventListener("click",function(){loadBids();});
 
