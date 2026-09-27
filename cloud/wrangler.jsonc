@@ -9,6 +9,10 @@
       {
         "name": "TIMER_PROBE",
         "class_name": "TimerProbe"
+      },
+      {
+        "name": "AUTOBID_DRYRUN",
+        "class_name": "AutoBidDryRun"
       }
     ]
   },
@@ -16,6 +20,10 @@
     {
       "tag": "v1",
       "new_sqlite_classes": ["TimerProbe"]
+    },
+    {
+      "tag": "v2",
+      "new_sqlite_classes": ["AutoBidDryRun"]
     }
   ]
 }
