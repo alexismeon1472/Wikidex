@@ -1178,7 +1178,8 @@ export default {
                 headers: { "content-type": "application/json" },
                 body: JSON.stringify({
                   listing: listingId,
-                  accountId
+                  accountId,
+                  userId: discovered.userId
                 })
               })
             );
