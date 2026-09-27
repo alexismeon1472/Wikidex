@@ -163,7 +163,7 @@ export function renderAppHtml() {
       border-top:1px solid var(--line);padding:12px 0
     }
     .marketRow{grid-template-columns:minmax(190px,2fr) repeat(4,minmax(85px,1fr)) auto}
-    .auctionRow{grid-template-columns:minmax(190px,2fr) repeat(4,minmax(85px,1fr)) auto}
+    .auctionRow{grid-template-columns:minmax(190px,2fr) repeat(5,minmax(78px,1fr)) auto}
     .marketRow:first-child,.auctionRow:first-child{border-top:0}
     .cellK{font-size:10px;color:var(--muted);text-transform:uppercase;letter-spacing:.06em}
     .cellV{margin-top:2px}
@@ -379,9 +379,16 @@ export function renderAppHtml() {
 
         <div class="card span7">
           <div class="sectionHead">
-            <div><h2 style="margin:0">Mes AutoBids</h2></div>
-            <button id="refreshBids" class="btn ghost">Actualiser</button>
+            <div>
+              <h2 style="margin:0">Mes AutoBids</h2>
+              <div class="muted" style="font-size:12px;margin-top:3px">AutoBids WikiDex + enchères synchronisées depuis WikiMasters.</div>
+            </div>
+            <div class="row">
+              <button id="syncBids" class="btn primary">Synchroniser WikiMasters</button>
+              <button id="refreshBids" class="btn ghost">Actualiser</button>
+            </div>
           </div>
+          <div id="syncBidsMsg" class="msg"></div>
           <div id="bids" class="tableList"></div>
         </div>
       </div>
@@ -1273,11 +1280,32 @@ export function renderAppHtml() {
 
 
   function statusLabel(bid){
+    if(bid.finishedAt){
+      if(bid.lastAction==="finished-won")return "Terminée · gagnée";
+      if(
+        bid.lastAction==="cap-reached"||
+        bid.lastAction==="cap-reached-before-post"
+      )return "Plafond atteint";
+      return "Terminée";
+    }
+
+    if(bid.paused)return "Pause";
+
+    if(bid.mode==="track"){
+      if(bid.lastAction==="tracking-highest")return "Suivi · en tête";
+      if(bid.lastAction==="tracking-outbid")return "Suivi · dépassé";
+      if(bid.running)return "Suivi";
+      return "Suivi en pause";
+    }
+
     if(bid.running)return "Actif";
-    if(bid.lastAction==="cap-reached")return "Plafond atteint";
-    if(bid.lastAction==="finished-won")return "Gagnée";
-    if(bid.finishedAt)return "Terminée";
-    if(bid.stoppedAt)return "Arrêté";
+
+    if(
+      bid.stoppedAt||
+      bid.lastAction==="stopped-by-user"||
+      bid.lastAction==="paused-by-user"
+    )return "Pause";
+
     return bid.lastAction||"Inactif";
   }
 
@@ -1290,7 +1318,7 @@ export function renderAppHtml() {
       if(!data.items||!data.items.length){
         var empty=document.createElement("p");
         empty.className="muted";
-        empty.textContent="Aucun AutoBid configuré.";
+        empty.textContent="Aucun AutoBid ni suivi synchronisé.";
         root.appendChild(empty);
         return;
       }
@@ -1303,10 +1331,12 @@ export function renderAppHtml() {
         var main=document.createElement("div");
         main.className="wikiTitle";
         main.textContent=bid.title||bid.listingId;
+
         var id=document.createElement("div");
         id.className="muted";
         id.style.fontSize="11px";
-        id.textContent=bid.listingId;
+        id.textContent=
+          (bid.mode==="track"?"SUIVI · ":"AUTOBID · ")+bid.listingId;
         title.append(main,id);
 
         function cell(k,v){
@@ -1321,29 +1351,86 @@ export function renderAppHtml() {
           return d;
         }
 
+        var reference="—";
+        if(Number.isFinite(Number(bid.average))){
+          reference=String(Number(bid.average))+
+            (bid.rarity?" ("+bid.rarity+")":"");
+        }
+
         var actions=document.createElement("div");
         actions.className="actions";
-        var stop=document.createElement("button");
-        stop.className="btn danger small";
-        stop.textContent="Arrêter";
-        stop.disabled=!bid.running;
-        stop.addEventListener("click",async function(){
-          stop.disabled=true;
-          try{
-            await api("/api/autobids/stop?listing="+encodeURIComponent(bid.listingId),{method:"POST"});
-            await loadBids();
-          }catch(e){
-            alert(e.message);
-            stop.disabled=false;
-          }
-        });
-        actions.appendChild(stop);
+        actions.style.display="flex";
+        actions.style.gap="6px";
+        actions.style.flexWrap="wrap";
+
+        var toggle=document.createElement("button");
+        toggle.className=bid.running?"btn danger small":"btn good small";
+
+        if(bid.finishedAt){
+          toggle.textContent="Terminé";
+          toggle.disabled=true;
+        }else if(bid.running){
+          toggle.textContent="Pause";
+          toggle.addEventListener("click",async function(){
+            toggle.disabled=true;
+            try{
+              await api(
+                "/api/autobids/pause?listing="+
+                encodeURIComponent(bid.listingId),
+                {method:"POST"}
+              );
+              await loadBids();
+            }catch(e){
+              alert(e.message);
+              toggle.disabled=false;
+            }
+          });
+        }else{
+          toggle.textContent="Reprendre";
+          toggle.addEventListener("click",async function(){
+            if(
+              bid.mode!=="track" &&
+              !confirm(
+                "Reprendre cet AutoBid réactive les vraies enchères jusqu’au plafond "+bid.max+" Wikibidous. Continuer ?"
+              )
+            )return;
+
+            toggle.disabled=true;
+            try{
+              await api(
+                "/api/autobids/resume?listing="+
+                encodeURIComponent(bid.listingId),
+                {
+                  method:"POST",
+                  body:JSON.stringify({
+                    confirm:bid.mode==="track"
+                      ?""
+                      :"RESUME_REAL_BIDS"
+                  })
+                }
+              );
+              await loadBids();
+            }catch(e){
+              alert(e.message);
+              toggle.disabled=false;
+            }
+          });
+        }
+
+        actions.appendChild(toggle);
 
         row.append(
           title,
           cell("Actuelle",formatMoney(bid.currentBid)),
-          cell("Suivante",formatMoney(bid.nextBid)),
-          cell("Plafond",formatMoney(bid.max)),
+          cell(
+            "Suivante",
+            bid.mode==="track"?"—":formatMoney(bid.nextBid)
+          ),
+          cell(
+            "Plafond",
+            bid.mode==="track"?"Suivi":formatMoney(bid.max)
+          ),
+          cell("Réf. moyenne",reference),
           cell("État",statusLabel(bid)),
           actions
         );
@@ -1357,6 +1444,37 @@ export function renderAppHtml() {
         box.textContent=e.message;
         root.appendChild(box);
       }
+    }
+  }
+
+  async function syncBidsFromWikiMasters(){
+    var btn=el("syncBids");
+    btn.disabled=true;
+    setMsg(
+      "syncBidsMsg",
+      "Recherche de tes enchères actives sur WikiMasters…"
+    );
+
+    try{
+      var data=await api("/api/autobids/sync",{
+        method:"POST",
+        body:JSON.stringify({})
+      });
+
+      setMsg(
+        "syncBidsMsg",
+        data.found+" enchère(s) détectée(s) · "+
+        data.imported+" ajoutée(s) en suivi · "+
+        data.preservedAutoBids+" AutoBid(s) existant(s) conservé(s)"+
+        (data.failed?" · "+data.failed+" échec(s)":""),
+        data.failed?"":"success"
+      );
+
+      await loadBids();
+    }catch(e){
+      setMsg("syncBidsMsg",e.message,"error");
+    }finally{
+      btn.disabled=false;
     }
   }
 
@@ -1529,6 +1647,7 @@ export function renderAppHtml() {
   });
   el("cleanupExecute").addEventListener("click",executeCleanup);
 
+  el("syncBids").addEventListener("click",syncBidsFromWikiMasters);
   el("refreshBids").addEventListener("click",function(){loadBids();});
 
   loadMe();
