@@ -761,8 +761,6 @@ export default {
           ok: true,
           scanId: snapshot.scanId,
           wishlistCount: snapshot.wishlistCount,
-          ownedUniqueCount: snapshot.ownedUniqueCount,
-          missingCount: snapshot.missingCount,
           createdAt: new Date(snapshot.createdAt).toISOString()
         });
       } catch (error) {
@@ -797,39 +795,31 @@ export default {
 
         const offset = Math.max(
           0,
-          Math.round(Number(url.searchParams.get("offset") || 0))
-        );
-        const limit = Math.max(
-          1,
-          Math.min(20, Math.round(Number(url.searchParams.get("limit") || 20)))
+          Math.floor(Number(url.searchParams.get("offset") || 0) / 50) * 50
         );
 
-        const chunk = snapshot.missingCards.slice(offset, offset + limit);
         const credentials = await resolveAccountCredentials(
           env,
           auth.account.accountId
         );
 
         const result = await scanPriorityMarketChunk(credentials, {
-          cards: chunk,
-          userId: snapshot.userId
+          wishlistCardIds: snapshot.wishlistCardIds,
+          userId: snapshot.userId,
+          offset
         });
-
-        const nextOffset =
-          offset + chunk.length < snapshot.missingCards.length
-            ? offset + chunk.length
-            : null;
 
         return json({
           ok: true,
           scanId,
           offset,
-          processed: chunk.length,
-          totalMissing: snapshot.missingCards.length,
-          scannedListings: result.scanned,
-          failedRequests: result.failed,
-          suggestions: result.suggestions,
-          nextOffset
+          scannedListings: result.scannedListings,
+          failedSegments: result.failedSegments,
+          recovered: result.recovered,
+          wishlistListings: result.wishlistListings,
+          ownedExcluded: result.ownedExcluded,
+          matches: result.matches,
+          nextOffset: result.nextOffset
         });
       } catch (error) {
         return json({
