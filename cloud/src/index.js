@@ -148,6 +148,31 @@ async function accountAutoBidRefs(env, accountId) {
   return Array.isArray(data?.listings) ? data.listings : [];
 }
 
+async function accountAutoBidCache(env, accountId) {
+  const response = await userAccountStub(env, accountId)
+    .fetch("https://account.internal/autobids/cache");
+
+  const data = await response.json().catch(() => null);
+  return data?.cache && typeof data.cache === "object"
+    ? data.cache
+    : {};
+}
+
+async function cacheAccountAutoBidState(env, accountId, listingId, state) {
+  try {
+    await userAccountStub(env, accountId).fetch(
+      new Request("https://account.internal/autobids/cache", {
+        method: "PUT",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({
+          listingId,
+          state
+        })
+      })
+    );
+  } catch {}
+}
+
 async function runningAccountAutoBids(env, accountId) {
   const refs = await accountAutoBidRefs(env, accountId);
   const running = [];
@@ -1080,86 +1105,82 @@ export default {
       if (auth.error) return auth.error;
 
       const accountId = auth.account.accountId;
+      const liveOnly = url.searchParams.get("live") === "1";
       const refs = await accountAutoBidRefs(env, accountId);
+      const cache = await accountAutoBidCache(env, accountId);
       const items = [];
-      let credentials = null;
-      let enrichmentBudget = 5;
 
       for (const listingId of refs) {
+        const cached = cache[listingId] || null;
+
+        // Archived rows never change again. During automatic UI refreshes,
+        // paused rows are cached too because their engine has no alarm.
+        if (
+          cached &&
+          (
+            cached.archived ||
+            (
+              liveOnly &&
+              !cached.running
+            )
+          )
+        ) {
+          items.push(cached);
+          continue;
+        }
+
         try {
-          const stub = userEngineStub(env, accountId, listingId);
-          const response = await stub.fetch("https://autobid.internal/status");
-          let data = await response.json();
+          const response = await userEngineStub(env, accountId, listingId)
+            .fetch("https://autobid.internal/status");
+          const data = await response.json();
 
-          const checkedAt = data?.averageCheckedAt
-            ? Date.parse(data.averageCheckedAt)
-            : 0;
-
-          const averageIsFresh =
-            Number.isFinite(checkedAt) &&
-            Date.now() - checkedAt < 6 * 60 * 60_000;
-
-          if (
-            data?.configured &&
-            !averageIsFresh &&
-            enrichmentBudget > 0
-          ) {
-            enrichmentBudget--;
-
-            try {
-              credentials = credentials || await resolveAccountCredentials(
-                env,
-                accountId
-              );
-
-              const pricing = await probeCardPricing(credentials, {
-                listingId
-              });
-
-              await stub.fetch(
-                new Request("https://autobid.internal/reference", {
-                  method: "POST",
-                  headers: { "content-type": "application/json" },
-                  body: JSON.stringify({
-                    cardId: pricing.cardId,
-                    rarity: pricing.rarity,
-                    average: pricing.average
-                  })
-                })
-              );
-
-              const refreshed = await stub.fetch(
-                "https://autobid.internal/status"
-              );
-              data = await refreshed.json();
-            } catch {}
-          }
-
-          items.push({
+          const state = {
             listingId,
             ...data
-          });
+          };
+
+          items.push(state);
+          await cacheAccountAutoBidState(
+            env,
+            accountId,
+            listingId,
+            state
+          );
         } catch (error) {
-          items.push({
+          const fallback = cached || {
             listingId,
             configured: false,
             running: false,
+            paused: false,
+            archived: false,
             error: error?.message || String(error)
-          });
+          };
+
+          items.push(fallback);
         }
       }
 
-      return json({ ok: true, items });
+      return json({
+        ok: true,
+        liveOnly,
+        items
+      });
     }
 
     if (url.pathname === "/api/autobids/sync" && request.method === "POST") {
       const auth = await authenticateUser(request, env);
       if (auth.error) return auth.error;
 
+      let body = {};
+      try { body = await request.json(); } catch {}
+
       try {
         const accountId = auth.account.accountId;
         const credentials = await resolveAccountCredentials(env, accountId);
-        const discovered = await discoverMyActiveBids(credentials);
+        const discovered = await discoverMyActiveBids(credentials, {
+          startPage: Math.max(1, Number(body.startPage) || 1),
+          maxPages: 15
+        });
 
         let imported = 0;
         let preservedAutoBids = 0;
@@ -1211,6 +1232,22 @@ export default {
               );
             } catch {}
 
+            try {
+              const latest = await stub.fetch(
+                "https://autobid.internal/status"
+              );
+              const latestData = await latest.json();
+              await cacheAccountAutoBidState(
+                env,
+                accountId,
+                listingId,
+                {
+                  listingId,
+                  ...latestData
+                }
+              );
+            } catch {}
+
             if (data?.preservedAutoBid) preservedAutoBids++;
             else imported++;
 
@@ -1233,9 +1270,12 @@ export default {
           imported,
           preservedAutoBids,
           failed,
+          startPage: discovered.startPage,
           pagesRead: discovered.pagesRead,
           scannedListings: discovered.scannedListings,
           failedPages: discovered.failedPages,
+          nextPage: discovered.nextPage,
+          finished: discovered.finished,
           synced
         });
       } catch (error) {
@@ -1314,6 +1354,53 @@ export default {
       }
 
       await addAccountAutoBidRef(env, accountId, listingId);
+
+      const stub = userEngineStub(env, accountId, listingId);
+
+      try {
+        const credentials = await resolveAccountCredentials(env, accountId);
+        const pricing = await probeCardPricing(credentials, {
+          listingId
+        });
+
+        await stub.fetch(
+          new Request("https://autobid.internal/reference", {
+            method: "POST",
+            headers: { "content-type": "application/json" },
+            body: JSON.stringify({
+              cardId: pricing.cardId,
+              rarity: pricing.rarity,
+              average: pricing.average
+            })
+          })
+        );
+      } catch {}
+
+      try {
+        const latest = await stub.fetch(
+          "https://autobid.internal/status"
+        );
+        const latestData = await latest.json();
+
+        await cacheAccountAutoBidState(
+          env,
+          accountId,
+          listingId,
+          {
+            listingId,
+            ...latestData
+          }
+        );
+
+        return json({
+          ...data,
+          cardId: latestData.cardId || null,
+          rarity: latestData.rarity || null,
+          imageUrl: latestData.imageUrl || null,
+          average: latestData.average ?? null
+        });
+      } catch {}
+
       return json(data);
     }
 
