@@ -148,6 +148,33 @@ async function accountAutoBidRefs(env, accountId) {
   return Array.isArray(data?.listings) ? data.listings : [];
 }
 
+async function runningAccountAutoBids(env, accountId) {
+  const refs = await accountAutoBidRefs(env, accountId);
+  const running = [];
+
+  for (const listingId of refs) {
+    try {
+      const response = await userEngineStub(env, accountId, listingId)
+        .fetch("https://autobid.internal/status");
+      const data = await response.json().catch(() => null);
+      if (data?.running) running.push(listingId);
+    } catch {}
+  }
+
+  return running;
+}
+
+async function stopAllAccountAutoBids(env, accountId) {
+  const refs = await accountAutoBidRefs(env, accountId);
+
+  for (const listingId of refs) {
+    try {
+      await userEngineStub(env, accountId, listingId)
+        .fetch("https://autobid.internal/stop", { method: "POST" });
+    } catch {}
+  }
+}
+
 async function addAccountAutoBidRef(env, accountId, listingId) {
   await userAccountStub(env, accountId).fetch(
     new Request("https://account.internal/autobids/add", {
@@ -478,6 +505,20 @@ export default {
       const stub = userAccountStub(env, auth.account.accountId);
 
       if (request.method === "PUT") {
+        const running = await runningAccountAutoBids(
+          env,
+          auth.account.accountId
+        );
+
+        if (running.length) {
+          return json({
+            ok: false,
+            error:
+              "Arrête les AutoBids actifs avant de remplacer la session WikiMasters.",
+            activeAutoBids: running.length
+          }, 409);
+        }
+
         let body = {};
         try { body = await request.json(); } catch {}
 
@@ -499,6 +540,8 @@ export default {
       }
 
       if (request.method === "DELETE") {
+        await stopAllAccountAutoBids(env, auth.account.accountId);
+
         const response = await stub.fetch(
           "https://account.internal/session",
           { method: "DELETE" }
