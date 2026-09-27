@@ -1450,7 +1450,8 @@ function detectBidParticipation(raw, userId) {
 }
 
 export async function discoverMyActiveBids(credentials, {
-  maxPages = 100
+  startPage = 1,
+  maxPages = 15
 } = {}) {
   const session = supabaseSession(credentials);
   const userId = session.userId;
@@ -1459,14 +1460,26 @@ export async function discoverMyActiveBids(credentials, {
   let pagesRead = 0;
   let scannedListings = 0;
   let failedPages = 0;
+  let nextPage = null;
+  let finished = false;
 
-  for (let page = 1; page <= Math.max(1, Math.min(250, Number(maxPages) || 100)); page++) {
+  const firstPage = Math.max(1, Number(startPage) || 1);
+  const pageBudget = Math.max(
+    1,
+    Math.min(20, Number(maxPages) || 15)
+  );
+  const lastPage = firstPage + pageBudget - 1;
+
+  for (let page = firstPage; page <= lastPage; page++) {
     const result = await requestMarketplacePage(credentials, page, 50);
     pagesRead++;
 
     if (!result?.ok) {
       failedPages++;
-      if (failedPages >= 3) break;
+      if (failedPages >= 3) {
+        nextPage = page + 1;
+        break;
+      }
       continue;
     }
 
@@ -1502,8 +1515,15 @@ export async function discoverMyActiveBids(credentials, {
       });
     }
 
-    if (result.data?.hasMore === false) break;
-    if (rows.length < 50) break;
+    if (result.data?.hasMore === false || rows.length < 50) {
+      finished = true;
+      nextPage = null;
+      break;
+    }
+
+    if (page === lastPage) {
+      nextPage = page + 1;
+    }
 
     await sleep(70);
   }
@@ -1511,9 +1531,12 @@ export async function discoverMyActiveBids(credentials, {
   return {
     ok: true,
     userId,
+    startPage: firstPage,
     pagesRead,
     scannedListings,
     failedPages,
+    nextPage,
+    finished,
     items
   };
 }
