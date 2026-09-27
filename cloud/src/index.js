@@ -118,6 +118,99 @@ async function probeWikiMastersAuth(env) {
   }, looksAuthenticated ? 200 : 502);
 }
 
+
+function normalizeListingId(value) {
+  const match = String(value || "").match(
+    /[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}/i
+  );
+  return match ? match[0].toLowerCase() : null;
+}
+
+async function probeAuctionRead(env, listingId) {
+  const id = normalizeListingId(listingId);
+  if (!id) {
+    return json({ ok: false, error: "Invalid listing id." }, 400);
+  }
+
+  if (!env.WIKIMASTERS_COOKIE) {
+    return json({
+      ok: false,
+      error: "WIKIMASTERS_COOKIE is not configured."
+    }, 503);
+  }
+
+  let upstream;
+  try {
+    upstream = await fetch(
+      "https://www.wiki-masters.com/api/marketplace/" + encodeURIComponent(id),
+      {
+        method: "GET",
+        headers: {
+          accept: "application/json, text/plain, */*",
+          cookie: env.WIKIMASTERS_COOKIE,
+          origin: "https://www.wiki-masters.com",
+          referer: "https://www.wiki-masters.com/marketplace"
+        },
+        redirect: "manual"
+      }
+    );
+  } catch (error) {
+    return json({
+      ok: false,
+      upstreamStatus: 0,
+      error: "Network error while contacting WikiMasters.",
+      detail: error?.message || String(error)
+    }, 502);
+  }
+
+  const contentType = upstream.headers.get("content-type") || "";
+  let data = null;
+
+  if (contentType.includes("application/json")) {
+    try {
+      data = await upstream.json();
+    } catch {}
+  } else {
+    await upstream.text().catch(() => "");
+  }
+
+  const auction = data?.auction || data || null;
+
+  if (!upstream.ok || !auction || typeof auction !== "object") {
+    return json({
+      ok: false,
+      listingId: id,
+      upstreamStatus: upstream.status,
+      upstreamContentType: contentType || null,
+      error: "Auction read failed."
+    }, 502);
+  }
+
+  const currentBid = Number(
+    auction.current_bid ??
+    auction.currentBid ??
+    auction.base_amount ??
+    auction.baseAmount ??
+    0
+  );
+
+  return json({
+    ok: true,
+    listingId: id,
+    upstreamStatus: upstream.status,
+    title:
+      auction?.card?.wikipedia_title ||
+      auction?.snapshot_search_document ||
+      null,
+    status: auction.status || null,
+    currentBid: Number.isFinite(currentBid) ? currentBid : null,
+    endAt: auction.end_at || auction.endAt || null,
+    hasCurrentBidder: !!(auction.current_bidder_id || auction.currentBidderId),
+    closed: ["settled_sold","settled_unsold","sold","closed","expired","cancelled","canceled","ended","settled"]
+      .includes(String(auction.status || "").toLowerCase())
+  });
+}
+
 export default {
   async fetch(request, env) {
     const url = new URL(request.url);
@@ -128,6 +221,17 @@ export default {
         service: "wikidex-cloud-poc",
         now: new Date().toISOString()
       });
+    }
+
+    if (url.pathname === "/probe/auction") {
+      const denied = requireProbeKey(request, env);
+      if (denied) return denied;
+
+      if (request.method !== "GET") {
+        return json({ ok: false, error: "Method not allowed." }, 405);
+      }
+
+      return probeAuctionRead(env, url.searchParams.get("listing"));
     }
 
     if (url.pathname === "/probe/auth") {
@@ -181,6 +285,7 @@ export default {
       routes: [
         "GET /health",
         "GET /probe/auth",
+        "GET /probe/auction?listing=<uuid>",
         "POST /probe/timer/start",
         "GET /probe/timer/status"
       ]
