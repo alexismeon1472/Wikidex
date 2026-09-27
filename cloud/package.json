@@ -7,9 +7,13 @@
     "dev": "wrangler dev",
     "deploy": "wrangler deploy",
     "tail": "wrangler tail",
-    "inspect-session": "node scripts/inspect-session.mjs"
+    "inspect-session": "node scripts/inspect-session.mjs",
+    "push:setup": "node scripts/setup-push.mjs"
   },
   "devDependencies": {
     "wrangler": "^4.0.0"
+  },
+  "dependencies": {
+    "@mmmike/web-push": "^1.3.0"
   }
 }
