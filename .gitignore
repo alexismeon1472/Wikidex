@@ -1,0 +1,18 @@
+# Dependencies / Cloudflare local state
+node_modules/
+.wrangler/
+
+# Local secrets
+.dev.vars
+.dev.vars.*
+.env
+.env.*
+!.env.example
+
+# Browser extension signing/build artifacts
+*.pem
+*.crx
+
+# OS/editor
+.DS_Store
+Thumbs.db
