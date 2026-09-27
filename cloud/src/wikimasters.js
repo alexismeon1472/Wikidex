@@ -889,8 +889,17 @@ export async function analyzeCommonCleanup(credentials, {
   const wishlistIds = new Set(
     wishlist.cardIds.map(normalizeId).filter(Boolean)
   );
-  const pending = new Set(
+  const pendingRaw = new Set(
     collection.pendingTradeCardIds.map(String)
+  );
+  const pendingNormalized = new Set(
+    collection.pendingTradeCardIds.map(normalizeId).filter(Boolean)
+  );
+
+  // Defense in depth: do not trust the server-side rarity filter alone.
+  // Only explicit rarity C cards can ever enter a discard plan.
+  const commons = collection.items.filter(
+    row => String(row?.rarity || "").trim().toUpperCase() === "C"
   );
 
   const candidates = [];
@@ -898,7 +907,7 @@ export async function analyzeCommonCleanup(credentials, {
   let protectedPending = 0;
   let protectedStarred = 0;
 
-  for (const row of collection.items) {
+  for (const row of commons) {
     const cardId = normalizeId(row.cardId);
     const userCardId = String(row.userCardId || "");
 
@@ -908,8 +917,8 @@ export async function analyzeCommonCleanup(credentials, {
     }
 
     if (
-      pending.has(userCardId) ||
-      (cardId && pending.has(cardId))
+      pendingRaw.has(userCardId) ||
+      (cardId && pendingNormalized.has(cardId))
     ) {
       protectedPending++;
       continue;
@@ -934,7 +943,7 @@ export async function analyzeCommonCleanup(credentials, {
   return {
     ok: true,
     protectStarred: !!protectStarred,
-    scanned: collection.items.length,
+    scanned: commons.length,
     pagesRead: collection.pagesRead,
     wishlistCount: wishlist.count,
     protectedWishlist,
