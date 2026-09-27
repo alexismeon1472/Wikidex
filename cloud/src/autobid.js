@@ -53,6 +53,24 @@ function auctionTitle(auction) {
     "Enchère"
   );
 }
+function auctionCardId(auction) {
+  return String(
+    auction?.card_id ||
+    auction?.cardId ||
+    auction?.card?.id ||
+    ""
+  ) || null;
+}
+
+function auctionRarity(auction) {
+  return String(
+    auction?.snapshot_rarity ||
+    auction?.snapshotRarity ||
+    auction?.card?.rarity ||
+    ""
+  ).trim().toUpperCase() || null;
+}
+
 
 function pollDelayMs(auction, now = Date.now()) {
   const end = Date.parse(auction?.end_at || auction?.endAt || "");
@@ -273,9 +291,14 @@ function publicState(state) {
     ok: true,
     configured: true,
     running: !!state.enabled && !state.finishedAt && !state.stoppedAt,
+    paused: !!state.pausedAt && !state.finishedAt,
+    mode: state.mode || (state.max != null ? "autobid" : "track"),
     listingId: state.listingId,
     title: state.title,
-    max: state.max,
+    cardId: state.cardId || null,
+    rarity: state.rarity || null,
+    average: Number.isFinite(Number(state.average)) ? Number(state.average) : null,
+    max: state.max ?? null,
     status: state.status || null,
     currentBid: state.currentBid ?? null,
     nextBid: state.nextBid ?? null,
@@ -285,6 +308,9 @@ function publicState(state) {
       : null,
     stoppedAt: state.stoppedAt
       ? new Date(state.stoppedAt).toISOString()
+      : null,
+    pausedAt: state.pausedAt
+      ? new Date(state.pausedAt).toISOString()
       : null,
     finishedAt: state.finishedAt
       ? new Date(state.finishedAt).toISOString()
@@ -389,18 +415,23 @@ export class AutoBidEngine extends DurableObject {
       }
 
       const state = {
-        schemaVersion: 2,
+        schemaVersion: 3,
         accountId,
         listingId,
+        mode: "autobid",
         max,
         userId,
         enabled: true,
         startedAt: now,
         stoppedAt: null,
+        pausedAt: null,
         finishedAt: null,
         lastReadAt: now,
         readErrors: 0,
         title: auctionTitle(auction),
+        cardId: auctionCardId(auction),
+        rarity: auctionRarity(auction),
+        average: null,
         status: auction.status || null,
         currentBid: Number(
           auction.current_bid ??
@@ -435,6 +466,226 @@ export class AutoBidEngine extends DurableObject {
         endAt: state.endAt,
         note:
           "AutoBid is armed. Every bid decision is persisted before a single POST /bid attempt."
+      });
+    }
+
+    if (url.pathname === "/track" && request.method === "POST") {
+      let body = {};
+      try { body = await request.json(); } catch {}
+
+      const listingId = normalizeListingId(body.listing);
+      if (!listingId) {
+        return json({ ok: false, error: "Invalid listing id." }, 400);
+      }
+
+      const accountId = body.accountId ? String(body.accountId) : null;
+
+      let credentials;
+      try {
+        credentials = await resolveWikiCredentials(this.env, accountId);
+      } catch (error) {
+        return json({ ok: false, error: error?.message || String(error) }, 503);
+      }
+
+      const userId = await fetchUserId(credentials);
+      const auction = await fetchAuction(credentials, listingId);
+      const now = Date.now();
+
+      if (isClosed(auction, now)) {
+        return json({ ok: false, error: "Auction is already closed." }, 409);
+      }
+
+      const existing = await this.ctx.storage.get("autoBid");
+
+      // Never downgrade a configured real AutoBid during synchronization.
+      if (
+        existing &&
+        (existing.mode === "autobid" || existing.max != null) &&
+        !existing.finishedAt
+      ) {
+        existing.title = auctionTitle(auction);
+        existing.cardId = existing.cardId || auctionCardId(auction);
+        existing.rarity = existing.rarity || auctionRarity(auction);
+        existing.status = auction.status || null;
+        existing.currentBid = Number(
+          auction.current_bid ??
+          auction.currentBid ??
+          auction.base_amount ??
+          auction.baseAmount ??
+          0
+        );
+        existing.nextBid = nextBid(existing.currentBid);
+        existing.endAt = auction.end_at || auction.endAt || null;
+        existing.lastReadAt = now;
+        await this.ctx.storage.put("autoBid", existing);
+
+        return json({
+          ok: true,
+          tracked: false,
+          preservedAutoBid: true,
+          listingId,
+          title: existing.title
+        });
+      }
+
+      const state = {
+        schemaVersion: 3,
+        accountId,
+        listingId,
+        mode: "track",
+        max: null,
+        userId,
+        enabled: true,
+        startedAt: existing?.startedAt || now,
+        stoppedAt: null,
+        pausedAt: null,
+        finishedAt: null,
+        lastReadAt: now,
+        readErrors: 0,
+        title: auctionTitle(auction),
+        cardId: auctionCardId(auction),
+        rarity: auctionRarity(auction),
+        average: existing?.average ?? null,
+        status: auction.status || null,
+        currentBid: Number(
+          auction.current_bid ??
+          auction.currentBid ??
+          auction.base_amount ??
+          auction.baseAmount ??
+          0
+        ),
+        nextBid: null,
+        endAt: auction.end_at || auction.endAt || null,
+        lastAction: "tracking-imported",
+        attemptedKeys: Array.isArray(existing?.attemptedKeys)
+          ? existing.attemptedKeys
+          : [],
+        attempts: Array.isArray(existing?.attempts)
+          ? existing.attempts
+          : [],
+        events: Array.isArray(existing?.events)
+          ? existing.events
+          : []
+      };
+
+      state.nextBid = nextBid(state.currentBid);
+      addEvent(state, {
+        action: "tracking-imported",
+        note: "Read-only tracking. No bid POST is allowed in track mode."
+      });
+
+      await this.ctx.storage.put("autoBid", state);
+      await this.ctx.storage.setAlarm(now + 1000);
+
+      return json({
+        ok: true,
+        tracked: true,
+        listingId,
+        title: state.title,
+        mode: "track"
+      });
+    }
+
+    if (url.pathname === "/pause" && request.method === "POST") {
+      const state = await this.ctx.storage.get("autoBid");
+      if (!state) {
+        return json({ ok: false, error: "No AutoBid configured." }, 404);
+      }
+
+      if (state.finishedAt) {
+        return json({ ok: false, error: "Auction is already finished." }, 409);
+      }
+
+      state.enabled = false;
+      state.pausedAt = Date.now();
+      state.lastAction = "paused-by-user";
+      addEvent(state, { action: "paused-by-user" });
+
+      await this.ctx.storage.put("autoBid", state);
+      await this.ctx.storage.deleteAlarm();
+
+      return json({
+        ok: true,
+        paused: true,
+        listingId: state.listingId
+      });
+    }
+
+    if (url.pathname === "/resume" && request.method === "POST") {
+      let body = {};
+      try { body = await request.json(); } catch {}
+
+      const state = await this.ctx.storage.get("autoBid");
+      if (!state) {
+        return json({ ok: false, error: "No AutoBid configured." }, 404);
+      }
+
+      if (state.finishedAt) {
+        return json({ ok: false, error: "Auction is already finished." }, 409);
+      }
+
+      const mode = state.mode || (state.max != null ? "autobid" : "track");
+
+      if (mode === "autobid") {
+        if (body.confirm !== "RESUME_REAL_BIDS") {
+          return json({
+            ok: false,
+            error: 'Explicit confirmation required to resume real bidding.'
+          }, 400);
+        }
+
+        if (String(this.env.AUTOBID_WRITES_ENABLED || "").toLowerCase() !== "true") {
+          return json({
+            ok: false,
+            error: "Real AutoBid write gate is disabled."
+          }, 503);
+        }
+
+        if (!Number.isFinite(Number(state.max)) || Number(state.max) <= 0) {
+          return json({ ok: false, error: "AutoBid has no valid ceiling." }, 409);
+        }
+      }
+
+      state.enabled = true;
+      state.pausedAt = null;
+      state.stoppedAt = null;
+      state.lastAction = "resumed-by-user";
+      addEvent(state, { action: "resumed-by-user", mode });
+
+      await this.ctx.storage.put("autoBid", state);
+      await this.ctx.storage.setAlarm(Date.now() + 500);
+
+      return json({
+        ok: true,
+        resumed: true,
+        listingId: state.listingId,
+        mode
+      });
+    }
+
+    if (url.pathname === "/reference" && request.method === "POST") {
+      let body = {};
+      try { body = await request.json(); } catch {}
+
+      const state = await this.ctx.storage.get("autoBid");
+      if (!state) {
+        return json({ ok: false, error: "No AutoBid configured." }, 404);
+      }
+
+      if (body.cardId) state.cardId = String(body.cardId);
+      if (body.rarity) state.rarity = String(body.rarity).toUpperCase();
+
+      const average = Number(body.average);
+      state.average = Number.isFinite(average) ? average : null;
+
+      await this.ctx.storage.put("autoBid", state);
+
+      return json({
+        ok: true,
+        listingId: state.listingId,
+        cardId: state.cardId || null,
+        rarity: state.rarity || null,
+        average: state.average
       });
     }
 
@@ -517,7 +768,12 @@ export class AutoBidEngine extends DurableObject {
     let state = await this.ctx.storage.get("autoBid");
     if (!state || !state.enabled || state.finishedAt || state.stoppedAt) return;
 
-    if (String(this.env.AUTOBID_WRITES_ENABLED || "").toLowerCase() !== "true") {
+    const mode = state.mode || (state.max != null ? "autobid" : "track");
+
+    if (
+      mode === "autobid" &&
+      String(this.env.AUTOBID_WRITES_ENABLED || "").toLowerCase() !== "true"
+    ) {
       state.enabled = false;
       state.lastAction = "global-write-gate-disabled";
       addEvent(state, { action: "global-write-gate-disabled" });
@@ -563,6 +819,8 @@ export class AutoBidEngine extends DurableObject {
     const sellerId = auction.seller_id || auction.sellerId || null;
 
     state.title = auctionTitle(auction);
+    state.cardId = state.cardId || auctionCardId(auction);
+    state.rarity = state.rarity || auctionRarity(auction);
     state.status = auction.status || null;
     state.currentBid = Number.isFinite(currentBid) ? currentBid : null;
     state.endAt = auction.end_at || auction.endAt || null;
@@ -594,6 +852,25 @@ export class AutoBidEngine extends DurableObject {
       addEvent(state, { action: "seller-guard" });
       await this.ctx.storage.put("autoBid", state);
       await this.ctx.storage.deleteAlarm();
+      return;
+    }
+
+    if (mode === "track") {
+      const highest =
+        currentBidderId &&
+        String(currentBidderId) === String(state.userId);
+
+      state.lastAction = highest
+        ? "tracking-highest"
+        : "tracking-outbid";
+
+      addEvent(state, {
+        action: state.lastAction,
+        currentBid: state.currentBid
+      });
+
+      await this.ctx.storage.put("autoBid", state);
+      await this.ctx.storage.setAlarm(now + pollDelayMs(auction, now));
       return;
     }
 
