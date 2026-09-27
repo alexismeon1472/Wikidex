@@ -1333,3 +1333,187 @@ export async function probeCardPricing(credentials, {
     }
   };
 }
+
+
+function detectBidParticipation(raw, userId) {
+  const uid = String(userId || "");
+  const currentBidder = String(
+    raw?.current_bidder_id ||
+    raw?.currentBidderId ||
+    ""
+  );
+
+  if (uid && currentBidder === uid) {
+    return { participated: true, method: "current-bidder" };
+  }
+
+  const directBooleans = [
+    "has_bid",
+    "hasBid",
+    "user_has_bid",
+    "userHasBid",
+    "has_user_bid",
+    "is_bidder",
+    "isBidder",
+    "participating",
+    "user_participating",
+    "userParticipating"
+  ];
+
+  for (const key of directBooleans) {
+    if (raw?.[key] === true) {
+      return { participated: true, method: key };
+    }
+  }
+
+  const directBidValues = [
+    "my_bid",
+    "myBid",
+    "user_bid",
+    "userBid",
+    "my_bid_amount",
+    "myBidAmount",
+    "user_bid_amount",
+    "userBidAmount",
+    "last_user_bid",
+    "lastUserBid"
+  ];
+
+  for (const key of directBidValues) {
+    const value = raw?.[key];
+
+    if (value && typeof value === "object") {
+      return { participated: true, method: key };
+    }
+
+    const n = Number(value);
+    if (Number.isFinite(n) && n > 0) {
+      return { participated: true, method: key };
+    }
+  }
+
+  const seen = new Set();
+
+  function walk(value, path = [], depth = 0) {
+    if (depth > 6 || value == null) return null;
+
+    if (typeof value !== "object") {
+      const full = path.join(".").toLowerCase();
+
+      if (
+        uid &&
+        String(value) === uid &&
+        /bid|bidder|ench/i.test(full)
+      ) {
+        return { participated: true, method: full || "nested-user-id" };
+      }
+
+      if (
+        /(^|\.)(has_bid|user_has_bid|is_bidder|participating)$/i.test(full) &&
+        value === true
+      ) {
+        return { participated: true, method: full };
+      }
+
+      if (
+        /my_?bid|user_?bid/i.test(full)
+      ) {
+        const n = Number(value);
+        if (Number.isFinite(n) && n > 0) {
+          return { participated: true, method: full };
+        }
+      }
+
+      return null;
+    }
+
+    if (seen.has(value)) return null;
+    seen.add(value);
+
+    if (Array.isArray(value)) {
+      for (let i = 0; i < Math.min(value.length, 50); i++) {
+        const hit = walk(value[i], [...path, String(i)], depth + 1);
+        if (hit) return hit;
+      }
+      return null;
+    }
+
+    for (const [key, child] of Object.entries(value)) {
+      const hit = walk(child, [...path, key], depth + 1);
+      if (hit) return hit;
+    }
+
+    return null;
+  }
+
+  return walk(raw) || { participated: false, method: null };
+}
+
+export async function discoverMyActiveBids(credentials, {
+  maxPages = 100
+} = {}) {
+  const session = supabaseSession(credentials);
+  const userId = session.userId;
+  const items = [];
+  const seenListings = new Set();
+  let pagesRead = 0;
+  let scannedListings = 0;
+  let failedPages = 0;
+
+  for (let page = 1; page <= Math.max(1, Math.min(250, Number(maxPages) || 100)); page++) {
+    const result = await requestMarketplacePage(credentials, page, 50);
+    pagesRead++;
+
+    if (!result?.ok) {
+      failedPages++;
+      if (failedPages >= 3) break;
+      continue;
+    }
+
+    const rows = Array.isArray(result.data?.auctions)
+      ? result.data.auctions
+      : [];
+
+    scannedListings += rows.length;
+
+    for (const raw of rows) {
+      const auction = normalizeAuction(raw);
+      if (!auction.listingId || seenListings.has(auction.listingId)) continue;
+      seenListings.add(auction.listingId);
+
+      if (String(auction.status || "").toLowerCase() !== "active") continue;
+
+      const end = listingEndMs(auction);
+      if (Number.isFinite(end) && end <= Date.now()) continue;
+
+      if (auction.sellerId && String(auction.sellerId) === String(userId)) {
+        continue;
+      }
+
+      const participation = detectBidParticipation(raw, userId);
+      if (!participation.participated) continue;
+
+      items.push({
+        ...auction,
+        syncMethod: participation.method,
+        isHighest:
+          !!auction.currentBidderId &&
+          String(auction.currentBidderId) === String(userId)
+      });
+    }
+
+    if (result.data?.hasMore === false) break;
+    if (rows.length < 50) break;
+
+    await sleep(70);
+  }
+
+  return {
+    ok: true,
+    userId,
+    pagesRead,
+    scannedListings,
+    failedPages,
+    items
+  };
+}
