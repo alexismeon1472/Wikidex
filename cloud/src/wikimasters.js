@@ -1223,112 +1223,113 @@ export async function probeCardPricing(credentials, {
 } = {}) {
   let resolvedCardId = String(cardId || "").trim();
   let title = "";
+  let rarity = "";
+  let salesSummary = null;
   const candidates = [];
   const inspectedSources = [];
 
   if (listingId) {
-    try {
-      const data = await wikiGet(
-        credentials,
-        "https://www.wiki-masters.com/api/marketplace/" +
-          encodeURIComponent(String(listingId))
+    const data = await wikiGet(
+      credentials,
+      "https://www.wiki-masters.com/api/marketplace/" +
+        encodeURIComponent(String(listingId))
+    );
+
+    const auction = data?.auction || data || null;
+    if (auction && typeof auction === "object") {
+      resolvedCardId = String(
+        resolvedCardId ||
+        auction?.card_id ||
+        auction?.card?.id ||
+        ""
       );
 
-      const auction = data?.auction || data || null;
-      if (auction && typeof auction === "object") {
-        resolvedCardId = String(
-          resolvedCardId ||
-          auction?.card_id ||
-          auction?.card?.id ||
-          ""
-        );
+      title = String(
+        auction?.card?.wikipedia_title ||
+        auction?.snapshot_search_document ||
+        ""
+      );
 
-        title = String(
-          auction?.card?.wikipedia_title ||
-          auction?.snapshot_search_document ||
-          ""
-        );
+      rarity = String(
+        auction?.snapshot_rarity ||
+        auction?.card?.rarity ||
+        ""
+      ).trim().toUpperCase();
 
-        candidates.push(...pricingCandidates(auction, "marketplace-detail"));
-        inspectedSources.push("marketplace-detail");
-      }
-    } catch {}
+      inspectedSources.push("marketplace-detail");
+    }
   }
 
-  // The sell form is shown only for owned cards, so inspect the raw
-  // collection payload as an additional discovery source. This stays read-only.
+  if (!resolvedCardId) {
+    throw new Error("Impossible de déterminer l'identifiant de la carte.");
+  }
+
   try {
-    const url = new URL("https://www.wiki-masters.com/api/my-collection");
-    url.searchParams.set("sort", "rarity");
-    url.searchParams.set("page", "0");
-    url.searchParams.set("stats", "0");
-
-    const collection = await wikiGet(credentials, url.toString());
-    const rows = Array.isArray(collection?.collection)
-      ? collection.collection
-      : [];
-
-    const matching = resolvedCardId
-      ? rows.filter(row =>
-          normalizeId(row?.card_id || row?.card?.id) === normalizeId(resolvedCardId)
-        )
-      : [];
-
-    const samples = matching.length
-      ? matching.slice(0, 3)
-      : rows.slice(0, 8);
-
-    for (const row of samples) {
-      candidates.push(
-        ...pricingCandidates(
-          row,
-          matching.length
-            ? "owned-card-target"
-            : "owned-card-sample"
-        )
-      );
-    }
-
-    inspectedSources.push(
-      matching.length
-        ? "owned-card-target"
-        : "owned-card-sample"
+    const salesUrl = new URL(
+      "https://www.wiki-masters.com/api/marketplace/cards/" +
+        encodeURIComponent(resolvedCardId) +
+        "/sales"
     );
-  } catch {}
+    salesUrl.searchParams.set("scope", "summary");
 
-  if (resolvedCardId) {
-    try {
-      const session = supabaseSession(credentials);
-      const url = new URL(SUPABASE_URL + "/rest/v1/cards");
-      url.searchParams.set("select", "*");
-      url.searchParams.set("id", "eq." + resolvedCardId);
-      url.searchParams.set("limit", "1");
+    salesSummary = await wikiGet(credentials, salesUrl.toString());
+    inspectedSources.push("marketplace-card-sales-summary");
+  } catch (error) {
+    throw new Error(
+      "Lecture de la moyenne WikiMasters impossible : " +
+      (error?.message || String(error))
+    );
+  }
 
-      const result = await supabaseRequest(
-        url.pathname + url.search,
-        session
-      );
+  if (!title) {
+    title = String(salesSummary?.wikipedia_title || "");
+  }
 
-      if (result.ok && Array.isArray(result.data) && result.data[0]) {
-        const row = result.data[0];
+  const summary =
+    salesSummary?.summary && typeof salesSummary.summary === "object"
+      ? salesSummary.summary
+      : {};
 
-        if (!title) {
-          title = String(row.wikipedia_title || row.title || "");
-        }
+  const averages = Object.entries(summary)
+    .map(([key, value]) => {
+      const average = Number(value?.average);
+      return Number.isFinite(average)
+        ? {
+            rarity: String(key || "").toUpperCase(),
+            average
+          }
+        : null;
+    })
+    .filter(Boolean);
 
-        candidates.push(...pricingCandidates(row, "supabase-cards"));
-        inspectedSources.push("supabase-cards");
-      }
-    } catch {}
+  let selected = null;
+
+  if (rarity) {
+    selected = averages.find(item => item.rarity === rarity) || null;
+  }
+
+  if (!selected && averages.length === 1) {
+    selected = averages[0];
+  }
+
+  if (!selected && averages.length) {
+    selected = averages[0];
   }
 
   return {
     ok: true,
-    cardId: resolvedCardId || null,
+    cardId: resolvedCardId,
     listingId: listingId || null,
     title: title || null,
-    probableAverage: probableAverage(candidates),
-    candidates,
-    inspectedSources
+    rarity: rarity || selected?.rarity || null,
+    average: selected?.average ?? null,
+    averages,
+    source: "marketplace-card-sales-summary",
+    isPro: salesSummary?.isPro === true,
+    inspectedSources,
+    rawShape: {
+      hasSummary: !!salesSummary?.summary,
+      rarities: Object.keys(summary)
+    }
   };
 }
