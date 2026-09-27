@@ -573,29 +573,43 @@ export async function marketplacePage(credentials, {
 }
 
 function supabaseSession(credentials) {
+  const stored = credentials?.supabaseSession || {};
   const cookieValue = authCookieValue(credentials?.cookie || "");
+
   const token =
+    stored.accessToken ||
+    stored.access_token ||
     findAuthJwt(cookieValue) ||
     findAuthJwt(credentials?.authorization || "");
 
   const payload = jwtPayload(token);
+  const userId =
+    stored.userId ||
+    stored.user_id ||
+    payload?.sub ||
+    null;
 
-  if (!token || !payload?.sub) {
+  if (!token || !userId) {
     throw new Error(
-      "Jeton Supabase introuvable dans la session WikiMasters. Reconnecte le compte WikiMasters."
+      "Session Supabase introuvable. Reconnecte une fois WikiMasters pour enregistrer le refresh token."
     );
   }
 
   const now = Math.floor(Date.now() / 1000);
-  if (payload.exp && payload.exp <= now + 10) {
+  const exp =
+    Number(stored.expiresAt || stored.expires_at) ||
+    Number(payload?.exp) ||
+    null;
+
+  if (Number.isFinite(exp) && exp <= now + 10) {
     throw new Error(
-      "Le jeton Wishlist a expiré. Reconnecte la session WikiMasters pour le renouveler."
+      "Le renouvellement automatique du jeton Wishlist a échoué. Reconnecte une fois la session WikiMasters."
     );
   }
 
   return {
     token,
-    userId: String(payload.sub)
+    userId: String(userId)
   };
 }
 
