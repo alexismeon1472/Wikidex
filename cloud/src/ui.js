@@ -163,7 +163,7 @@ export function renderAppHtml() {
       border-top:1px solid var(--line);padding:12px 0
     }
     .marketRow{grid-template-columns:minmax(190px,2fr) repeat(4,minmax(85px,1fr)) auto}
-    .auctionRow{grid-template-columns:minmax(240px,2fr) repeat(5,minmax(78px,1fr)) auto}
+    .auctionRow{grid-template-columns:minmax(180px,2fr) repeat(5,minmax(64px,1fr)) auto}
     .marketRow:first-child,.auctionRow:first-child{border-top:0}
     .auctionIdentity{display:flex;align-items:center;gap:10px;min-width:0}
     .auctionThumb{
@@ -377,7 +377,7 @@ export function renderAppHtml() {
 
     <div id="tab-autobid" class="tabPage hidden">
       <div class="grid">
-        <div class="card span5">
+        <div class="card span4">
           <h2>Nouvel AutoBid</h2>
           <label for="listing">ID ou URL de l’enchère</label>
           <input id="listing" placeholder="UUID ou URL WikiMasters">
@@ -415,7 +415,7 @@ export function renderAppHtml() {
           <div id="bidMsg" class="msg"></div>
         </div>
 
-        <div class="card span7">
+        <div class="card span8">
           <div class="sectionHead">
             <div>
               <h2 style="margin:0">Mes AutoBids</h2>
@@ -1778,7 +1778,7 @@ export function renderAppHtml() {
     );
 
     try{
-      while(startPage!==null&&chunks<4){
+      while(startPage!==null&&chunks<8){
         setMsg(
           "syncBidsMsg",
           "Synchronisation WikiMasters… page "+
@@ -1811,7 +1811,7 @@ export function renderAppHtml() {
       }
 
       var suffix=startPage!==null
-        ?" · scan limité volontairement à 60 pages pour économiser les requêtes"
+        ?" · scan limité volontairement à 64 pages pour économiser les requêtes"
         :"";
 
       setMsg(
