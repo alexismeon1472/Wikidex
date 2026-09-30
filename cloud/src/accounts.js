@@ -388,51 +388,200 @@ function wikiHeaders(credentials) {
     referer: "https://www.wiki-masters.com/"
   });
 
-  if (credentials?.cookie) headers.set("cookie", credentials.cookie);
-  if (credentials?.authorization) {
-    headers.set("authorization", credentials.authorization);
+  if (credentials?.cookie) {
+    headers.set("cookie", credentials.cookie);
+  }
+
+  const session = extractSupabaseSession(credentials);
+  const authorization =
+    String(credentials?.authorization || "").trim() ||
+    (
+      session?.accessToken
+        ? "Bearer " + session.accessToken
+        : ""
+    );
+
+  if (authorization) {
+    headers.set("authorization", authorization);
   }
 
   return headers;
 }
 
+async function validationFetch(credentials, url) {
+  const retryDelays = [0, 400, 1000];
+  let last = null;
+
+  for (let attempt = 0; attempt < retryDelays.length; attempt++) {
+    if (retryDelays[attempt]) {
+      await new Promise(resolve =>
+        setTimeout(resolve, retryDelays[attempt])
+      );
+    }
+
+    try {
+      const response = await fetch(url, {
+        method: "GET",
+        headers: wikiHeaders(credentials),
+        redirect: "manual"
+      });
+
+      const text = await response.text();
+      let data = null;
+
+      try {
+        data = text ? JSON.parse(text) : null;
+      } catch {}
+
+      last = {
+        ok: response.ok,
+        status: response.status,
+        contentType:
+          response.headers.get("content-type") || "",
+        data
+      };
+
+      if (response.ok) return last;
+
+      if (![429, 500, 502, 503, 504].includes(response.status)) {
+        return last;
+      }
+    } catch (error) {
+      last = {
+        ok: false,
+        status: 0,
+        contentType: "",
+        data: null,
+        networkError:
+          error?.message || String(error)
+      };
+    }
+  }
+
+  return last;
+}
+
+async function validateSupabaseIdentity(credentials) {
+  const session = extractSupabaseSession(credentials);
+  if (!session?.accessToken) return null;
+
+  let token = session.accessToken;
+
+  if (
+    supabaseAccessNeedsRefresh(session) &&
+    session.refreshToken
+  ) {
+    try {
+      const refreshed = await refreshSupabaseSession(session);
+      credentials.supabaseSession = refreshed;
+      token = refreshed.accessToken;
+    } catch {}
+  }
+
+  const payload = jwtPayload(token);
+  if (!payload?.sub) return null;
+
+  try {
+    const response = await fetch(
+      SUPABASE_URL + "/auth/v1/user",
+      {
+        method: "GET",
+        headers: {
+          accept: "application/json",
+          apikey: SUPABASE_ANON_KEY,
+          authorization: "Bearer " + token
+        }
+      }
+    );
+
+    if (!response.ok) return null;
+
+    const data = await response.json().catch(() => null);
+    const userId =
+      data?.id ||
+      data?.user?.id ||
+      payload.sub ||
+      null;
+
+    return userId ? String(userId) : null;
+  } catch {
+    return null;
+  }
+}
+
 async function validateWikiMastersCredentials(credentials) {
   if (!credentials?.cookie && !credentials?.authorization) {
-    throw new Error("A WikiMasters cookie or authorization header is required.");
+    throw new Error(
+      "A WikiMasters cookie or authorization header is required."
+    );
   }
 
-  const url = new URL("https://www.wiki-masters.com/api/my-collection");
-  url.searchParams.set("sort", "rarity");
-  url.searchParams.set("rarity", "C");
-  url.searchParams.set("page", "0");
-  url.searchParams.set("stats", "0");
+  // First try the least opinionated authenticated collection query.
+  const unfiltered = new URL(
+    "https://www.wiki-masters.com/api/my-collection"
+  );
+  unfiltered.searchParams.set("sort", "rarity");
+  unfiltered.searchParams.set("page", "0");
+  unfiltered.searchParams.set("stats", "0");
 
-  const response = await fetch(url.toString(), {
-    method: "GET",
-    headers: wikiHeaders(credentials),
-    redirect: "manual"
-  });
+  const first = await validationFetch(
+    credentials,
+    unfiltered.toString()
+  );
 
-  const text = await response.text();
-  let data = null;
-  try {
-    data = text ? JSON.parse(text) : null;
-  } catch {}
+  if (first?.ok && Array.isArray(first.data?.collection)) {
+    const rows = first.data.collection;
+    const session = extractSupabaseSession(credentials);
 
-  const rows = Array.isArray(data?.collection) ? data.collection : null;
-  if (!response.ok || !rows) {
-    throw new Error("WikiMasters session validation failed (HTTP " + response.status + ").");
+    const userId =
+      rows.find(row => row?.user_id)?.user_id ||
+      rows.find(row => row?.userId)?.userId ||
+      session?.userId ||
+      jwtPayload(session?.accessToken)?.sub ||
+      null;
+
+    return {
+      userId: userId ? String(userId) : null,
+      commonCardsOnFirstPage: rows.filter(
+        row =>
+          String(
+            row?.rarity ||
+            row?.card?.rarity ||
+            ""
+          ).toUpperCase() === "C"
+      ).length,
+      validationMode: "wikimasters-collection"
+    };
   }
 
-  const userId =
-    rows.find(row => row?.user_id)?.user_id ||
-    rows.find(row => row?.userId)?.userId ||
-    null;
+  // Some WikiMasters accounts currently return HTTP 500 on collection reads.
+  // If the same stored session is independently accepted by Supabase,
+  // allow connection instead of forcing the user to paste credentials again.
+  const supabaseUserId =
+    await validateSupabaseIdentity(credentials);
 
-  return {
-    userId: userId ? String(userId) : null,
-    commonCardsOnFirstPage: rows.length
-  };
+  if (supabaseUserId) {
+    return {
+      userId: supabaseUserId,
+      commonCardsOnFirstPage: null,
+      validationMode: "supabase-auth-fallback",
+      wikiMastersCollectionStatus:
+        Number(first?.status) || 0
+    };
+  }
+
+  const status = Number(first?.status) || 0;
+  const kind =
+    /html/i.test(first?.contentType || "")
+      ? ", réponse HTML"
+      : "";
+
+  throw new Error(
+    "Session non validée : WikiMasters /api/my-collection répond HTTP " +
+    status +
+    kind +
+    " et le jeton Supabase du cookie n'a pas pu être validé."
+  );
 }
 
 export class UserRegistry extends DurableObject {
@@ -610,6 +759,10 @@ export class UserAccount extends DurableObject {
             !!credentials.supabaseSession?.accessToken,
           hasSupabaseRefresh:
             !!credentials.supabaseSession?.refreshToken,
+          validationMode:
+            validation.validationMode || null,
+          wikiMastersCollectionStatus:
+            validation.wikiMastersCollectionStatus ?? null,
           updatedAt: profile.updatedAt
         });
       } catch (error) {
