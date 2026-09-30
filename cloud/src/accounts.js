@@ -354,6 +354,33 @@ async function refreshSupabaseSession(session) {
   };
 }
 
+function normalizeCookieInput(value) {
+  let text = String(value || "").trim();
+  if (!text) return "";
+
+  // Accept either the raw Cookie value or a copied header/block.
+  const lines = text
+    .split(/\r?\n/)
+    .map(line => line.trim())
+    .filter(Boolean);
+
+  const cookieLine = lines.find(line =>
+    /^cookie\s*:/i.test(line)
+  );
+
+  if (cookieLine) {
+    text = cookieLine.replace(/^cookie\s*:\s*/i, "");
+  } else if (/^cookie\s*:/i.test(text)) {
+    text = text.replace(/^cookie\s*:\s*/i, "");
+  }
+
+  // Header values cannot contain CR/LF. If somebody pasted several lines,
+  // only cookie-shaped fragments are retained.
+  text = text.replace(/[\r\n]+/g, " ").trim();
+
+  return text;
+}
+
 function wikiHeaders(credentials) {
   const headers = new Headers({
     accept: "application/json, text/plain, */*",
@@ -487,6 +514,7 @@ export class UserAccount extends DurableObject {
     super(ctx, env);
     this.ctx = ctx;
     this.env = env;
+    this.supabaseRefreshPromise = null;
   }
 
   async fetch(request) {
@@ -496,56 +524,103 @@ export class UserAccount extends DurableObject {
       let body = {};
       try {
         body = await request.json();
-      } catch {}
+      } catch {
+        return json({
+          ok: false,
+          connected: false,
+          stage: "request",
+          error: "Requête de connexion invalide."
+        }, 400);
+      }
 
       const credentials = {
-        cookie: String(body.cookie || "").trim(),
+        cookie: normalizeCookieInput(body.cookie),
         authorization: String(body.authorization || "").trim()
       };
-
-      const initialSupabaseSession = extractSupabaseSession(credentials);
-      if (
-        initialSupabaseSession.accessToken ||
-        initialSupabaseSession.refreshToken
-      ) {
-        credentials.supabaseSession = initialSupabaseSession;
-      }
 
       if (!credentials.cookie && !credentials.authorization) {
         return json({
           ok: false,
-          error: "A WikiMasters Cookie or Authorization value is required."
+          connected: false,
+          stage: "request",
+          error: "Le Cookie WikiMasters est vide."
         }, 400);
+      }
+
+      try {
+        const initialSupabaseSession =
+          extractSupabaseSession(credentials);
+
+        if (
+          initialSupabaseSession.accessToken ||
+          initialSupabaseSession.refreshToken
+        ) {
+          credentials.supabaseSession =
+            initialSupabaseSession;
+        }
+      } catch {
+        // Supabase parsing is optional for native WikiMasters features.
+        // Do not reject an otherwise valid WikiMasters session here.
       }
 
       let validation;
       try {
-        validation = await validateWikiMastersCredentials(credentials);
+        validation = await validateWikiMastersCredentials(
+          credentials
+        );
       } catch (error) {
         return json({
           ok: false,
           connected: false,
-          error: error?.message || String(error)
+          stage: "wikimasters-validation",
+          error:
+            error?.message ||
+            "La session WikiMasters n'a pas pu être validée."
         }, 400);
       }
 
-      const sealed = await sealJson(this.env.VAULT_MASTER_KEY, credentials);
-      const profile = {
-        connected: true,
-        wikiUserId: validation.userId,
-        updatedAt: new Date().toISOString()
-      };
+      try {
+        const sealed = await sealJson(
+          this.env.VAULT_MASTER_KEY,
+          credentials
+        );
 
-      await this.ctx.storage.put("wikiCredentials", sealed);
-      await this.ctx.storage.put("profile", profile);
+        const profile = {
+          connected: true,
+          wikiUserId: validation.userId,
+          updatedAt: new Date().toISOString()
+        };
 
-      return json({
-        ok: true,
-        connected: true,
-        wikiUserId: validation.userId,
-        commonCardsOnFirstPage: validation.commonCardsOnFirstPage,
-        updatedAt: profile.updatedAt
-      });
+        await this.ctx.storage.put(
+          "wikiCredentials",
+          sealed
+        );
+        await this.ctx.storage.put(
+          "profile",
+          profile
+        );
+
+        return json({
+          ok: true,
+          connected: true,
+          wikiUserId: validation.userId,
+          commonCardsOnFirstPage:
+            validation.commonCardsOnFirstPage,
+          hasSupabaseAccess:
+            !!credentials.supabaseSession?.accessToken,
+          hasSupabaseRefresh:
+            !!credentials.supabaseSession?.refreshToken,
+          updatedAt: profile.updatedAt
+        });
+      } catch (error) {
+        return json({
+          ok: false,
+          connected: false,
+          stage: "vault",
+          error:
+            "La session WikiMasters a été validée mais WikiDex n'a pas pu l'enregistrer dans le coffre."
+        }, 500);
+      }
     }
 
     if (url.pathname === "/session" && request.method === "DELETE") {
