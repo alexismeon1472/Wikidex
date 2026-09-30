@@ -145,9 +145,27 @@ function credentialsHeaders(credentials, referer = "https://www.wiki-masters.com
     referer
   });
 
-  if (credentials?.cookie) headers.set("cookie", credentials.cookie);
-  if (credentials?.authorization) {
-    headers.set("authorization", credentials.authorization);
+  if (credentials?.cookie) {
+    headers.set("cookie", credentials.cookie);
+  }
+
+  const stored = credentials?.supabaseSession || {};
+  const cookieToken = findAuthJwt(
+    authCookieValue(credentials?.cookie || "")
+  );
+
+  const token =
+    stored.accessToken ||
+    stored.access_token ||
+    cookieToken ||
+    null;
+
+  const authorization =
+    String(credentials?.authorization || "").trim() ||
+    (token ? "Bearer " + token : "");
+
+  if (authorization) {
+    headers.set("authorization", authorization);
   }
 
   return headers;
