@@ -144,28 +144,30 @@ function hasAttemptKey(state, key) {
   return Array.isArray(state.attemptedKeys) && state.attemptedKeys.includes(key);
 }
 
-function wikiHeaders(credentials, withJsonBody = false) {
+function wikiHeaders(credentials, extra = {}) {
   const headers = new Headers({
     accept: "application/json, text/plain, */*",
-    origin: "https://www.wiki-masters.com",
-    referer: "https://www.wiki-masters.com/marketplace"
+    origin: WIKI_ORIGIN,
+    referer: WIKI_ORIGIN + "/",
+    ...extra
   });
 
-  const cookie =
-    credentials?.cookie ||
-    credentials?.WIKIMASTERS_COOKIE ||
-    "";
+  if (credentials?.cookie) {
+    headers.set("cookie", credentials.cookie);
+  }
+
+  const stored = credentials?.supabaseSession || {};
+  const token =
+    stored.accessToken ||
+    stored.access_token ||
+    null;
 
   const authorization =
-    credentials?.authorization ||
-    credentials?.WIKIMASTERS_AUTHORIZATION ||
-    "";
+    String(credentials?.authorization || "").trim() ||
+    (token ? "Bearer " + token : "");
 
-  if (cookie) headers.set("cookie", cookie);
-  if (authorization) headers.set("authorization", authorization);
-
-  if (withJsonBody) {
-    headers.set("content-type", "application/json");
+  if (authorization) {
+    headers.set("authorization", authorization);
   }
 
   return headers;
